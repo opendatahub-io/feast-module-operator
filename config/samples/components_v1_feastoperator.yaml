@@ -1,0 +1,7 @@
+apiVersion: components.platform.opendatahub.io/v1
+kind: FeastOperator
+metadata:
+  labels:
+    app.kubernetes.io/name: opendatahub-feast-operator
+  name: default-feastoperator
+spec: {}
