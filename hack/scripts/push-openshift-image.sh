@@ -39,13 +39,23 @@ ocp_tag="$(uuidgen | tr '[:upper:]' '[:lower:]')"
 external_image="${external_host}/${namespace}/${image_name}:${ocp_tag}"
 internal_image="${internal_registry_host}/${namespace}/${image_name}:${ocp_tag}"
 
+insecure_flag=""
+if [[ "${INSECURE_REGISTRY:-false}" == "true" ]]; then
+    insecure_flag="--insecure=true"
+fi
+
+tls_verify="true"
+if [[ "${INSECURE_REGISTRY:-false}" == "true" ]]; then
+    tls_verify="false"
+fi
+
 echo "Logging into ${external_host}" >&2
-oc registry login --insecure=true --registry "${external_host}" >/dev/null
+oc registry login ${insecure_flag} --registry "${external_host}" >/dev/null
 
 echo "Tagging ${source_image} as ${external_image}" >&2
 podman tag "${source_image}" "${external_image}"
 
 echo "Pushing ${external_image}" >&2
-podman push "${external_image}" --tls-verify=false >/dev/null
+podman push "${external_image}" --tls-verify="${tls_verify}" >/dev/null
 
 printf '%s\n' "${internal_image}"

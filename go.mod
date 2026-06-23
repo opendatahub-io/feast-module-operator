@@ -129,4 +129,8 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.0 // indirect
 )
 
+// Temporary: uses lburgazzoli's fork which contains the modular handler
+// framework (StevenTobin/add_modular_handler branch) not yet merged upstream.
+// Tracked by: https://github.com/opendatahub-io/opendatahub-operator/pull/TBD
+// Remove once the modular handler framework is merged into opendatahub-operator.
 replace github.com/opendatahub-io/opendatahub-operator/v2 => github.com/lburgazzoli/opendatahub-operator/v2 v2.0.0-20260522211029-67d95fa3b5a1
