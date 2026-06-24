@@ -18,6 +18,7 @@ package feastoperator
 
 import (
 	"context"
+	"fmt"
 
 	promv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -25,7 +26,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	k8slabels "k8s.io/apimachinery/pkg/labels"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	componentApi "github.com/opendatahub-io/feast-module-operator/api/components/v1"
 	moduleconfig "github.com/opendatahub-io/feast-module-operator/pkg/config"
@@ -39,6 +43,7 @@ import (
 	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/predicates"
 	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/predicates/component"
 	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/reconciler"
+	odhtypes "github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/types"
 	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/metadata/labels"
 )
 
@@ -113,6 +118,7 @@ func NewReconciler(
 		WithAction(gc.NewAction(
 			gc.InNamespace(cfg.ApplicationsNamespace),
 		)).
+		WithFinalizer(m.cleanupClusterResources).
 		WithConditions(
 			"DeploymentsAvailable",
 		).
@@ -123,6 +129,31 @@ func NewReconciler(
 	}
 
 	r.Release = rel
+
+	return nil
+}
+
+// cleanupClusterResources removes cluster-scoped resources (ClusterRoles, ClusterRoleBindings)
+// that cannot use ownerReferences for garbage collection.
+func (m *Module) cleanupClusterResources(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+	log := logf.FromContext(ctx)
+	selector := k8slabels.SelectorFromSet(k8slabels.Set{
+		labels.ODH.Component(componentName): labels.True,
+	})
+
+	opts := []client.DeleteAllOfOption{
+		client.MatchingLabelsSelector{Selector: selector},
+	}
+
+	log.Info("Cleaning up cluster-scoped resources for FeastOperator")
+
+	if err := rr.Client.DeleteAllOf(ctx, &rbacv1.ClusterRoleBinding{}, opts...); client.IgnoreNotFound(err) != nil {
+		return fmt.Errorf("failed to delete ClusterRoleBindings: %w", err)
+	}
+
+	if err := rr.Client.DeleteAllOf(ctx, &rbacv1.ClusterRole{}, opts...); client.IgnoreNotFound(err) != nil {
+		return fmt.Errorf("failed to delete ClusterRoles: %w", err)
+	}
 
 	return nil
 }
