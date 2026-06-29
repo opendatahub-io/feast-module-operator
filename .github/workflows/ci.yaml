@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.26'
+  IMAGE_REGISTRY: quay.io
+  IMAGE_REPO: opendatahub/feast-module-operator
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run golangci-lint
+        run: make lint
+
+  build:
+    name: Build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build manager binary
+        run: make build
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run unit tests
+        run: make test
+
+  verify-manifests:
+    name: Verify Generated Files
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Generate manifests and code
+        run: |
+          make manifests
+          make generate
+
+      - name: Check for uncommitted changes
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Generated files are out of date. Run 'make manifests generate' and commit the result."
+            git diff
+            exit 1
+          fi
+
+  image-build:
+    name: Build and Push Image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: [lint, build, test, verify-manifests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Login to Quay.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.IMAGE_REGISTRY }}
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+
+      - name: Set image tag
+        id: tag
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "sha_tag=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=latest" >> "$GITHUB_OUTPUT"
+
+      - name: Build image
+        run: |
+          make container-build \
+            CONTAINER_TOOL=docker \
+            IMG=${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_REPO }}:${{ steps.tag.outputs.sha_tag }}
+
+      - name: Tag as latest
+        run: |
+          docker tag \
+            ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_REPO }}:${{ steps.tag.outputs.sha_tag }} \
+            ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_REPO }}:${{ steps.tag.outputs.latest_tag }}
+
+      - name: Push images
+        run: |
+          docker push ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_REPO }}:${{ steps.tag.outputs.sha_tag }}
+          docker push ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_REPO }}:${{ steps.tag.outputs.latest_tag }}
