@@ -2,7 +2,7 @@ config:
   platform-name: OpenDataHub
   platform-version: unknown
 image:
-  repository: ttl.sh/opendatahub-feast-operator
+  repository: quay.io/opendatahub/feast-module-operator
   tag: latest
 leaderElect: true
 replicas: 1
