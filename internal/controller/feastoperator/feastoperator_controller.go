@@ -26,7 +26,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	k8slabels "k8s.io/apimachinery/pkg/labels"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -137,22 +136,32 @@ func NewReconciler(
 // that cannot use ownerReferences for garbage collection.
 func (m *Module) cleanupClusterResources(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
 	log := logf.FromContext(ctx)
-	selector := k8slabels.SelectorFromSet(k8slabels.Set{
-		labels.ODH.Component(componentName): labels.True,
-	})
-
-	opts := []client.DeleteAllOfOption{
-		client.MatchingLabelsSelector{Selector: selector},
+	listOpts := []client.ListOption{
+		client.MatchingLabels{
+			labels.ODH.Component(componentName): labels.True,
+		},
 	}
 
 	log.Info("Cleaning up cluster-scoped resources for FeastOperator")
 
-	if err := rr.Client.DeleteAllOf(ctx, &rbacv1.ClusterRoleBinding{}, opts...); client.IgnoreNotFound(err) != nil {
-		return fmt.Errorf("failed to delete ClusterRoleBindings: %w", err)
+	crbList := &rbacv1.ClusterRoleBindingList{}
+	if err := rr.Client.List(ctx, crbList, listOpts...); err != nil {
+		return fmt.Errorf("failed to list ClusterRoleBindings: %w", err)
+	}
+	for i := range crbList.Items {
+		if err := rr.Client.Delete(ctx, &crbList.Items[i]); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("failed to delete ClusterRoleBinding %s: %w", crbList.Items[i].Name, err)
+		}
 	}
 
-	if err := rr.Client.DeleteAllOf(ctx, &rbacv1.ClusterRole{}, opts...); client.IgnoreNotFound(err) != nil {
-		return fmt.Errorf("failed to delete ClusterRoles: %w", err)
+	crList := &rbacv1.ClusterRoleList{}
+	if err := rr.Client.List(ctx, crList, listOpts...); err != nil {
+		return fmt.Errorf("failed to list ClusterRoles: %w", err)
+	}
+	for i := range crList.Items {
+		if err := rr.Client.Delete(ctx, &crList.Items[i]); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("failed to delete ClusterRole %s: %w", crList.Items[i].Name, err)
+		}
 	}
 
 	return nil

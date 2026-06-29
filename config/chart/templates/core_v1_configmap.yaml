@@ -6,6 +6,8 @@ data:
   {{- range $key, $val := .Values.config }}
   {{ $key }}: {{ $val | quote }}
   {{- end }}
+  platform-name: OpenDataHub
+  platform-version: unknown
 kind: ConfigMap
 metadata:
   labels:

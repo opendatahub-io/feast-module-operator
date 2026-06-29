@@ -10,7 +10,13 @@ rules:
   resources:
   - feastoperators
   verbs:
-  - '*'
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - components.platform.opendatahub.io
   resources:
