@@ -1,0 +1,35 @@
+# Build artifacts
+bin/
+vendor/
+*.test
+cover.out
+covmeta*
+covcounters*
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+
+# OS
+.DS_Store
+*~
+*.swp
+*.swo
+
+
+# Downloaded manifests (fetched by get-manifests.sh)
+config/manifests/feastoperator/
+
+# Kubeconfig (local dev)
+.kube/
+
+# Custom golangci-lint plugin config
+.custom-gcl.yml
+
+# Makefile overrides
+local.mk
+*.mktmp.*
+
+# direnv
+.envrc

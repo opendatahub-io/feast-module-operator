@@ -1,0 +1,16 @@
+config:
+  platform-name: OpenDataHub
+  platform-version: unknown
+image:
+  repository: quay.io/opendatahub/feast-module-operator
+  tag: latest
+leaderElect: true
+replicas: 1
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 10m
+    memory: 128Mi
+serviceAccount: {}
