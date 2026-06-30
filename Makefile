@@ -7,7 +7,7 @@ IMG ?= ttl.sh/opendatahub-feast-operator-$(shell git rev-parse --short HEAD 2>/d
 YEAR ?= $(shell date +%Y)
 
 # CONTAINER_TOOL defines the container tool to be used for building images.
-CONTAINER_TOOL ?= podman
+CONTAINER_TOOL ?= docker
 
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 SHELL = /usr/bin/env bash -o pipefail
@@ -150,13 +150,19 @@ container-prep: manifests generate get-manifests ## On host: regenerate code and
 run: manifests generate fmt vet ## Run a controller from your host.
 	ODH_MODULE_OPERATOR_MANIFESTS_PATH=config/manifests go run -ldflags "$(LDFLAGS)" ./cmd/main.go operator
 
-.PHONY: container-build
-container-build: container-prep ## Build container image with the manager.
+.PHONY: docker-build
+docker-build: container-prep ## Build docker image with the manager.
 	$(CONTAINER_TOOL) build -f Containerfile --build-arg LDFLAGS="$(LDFLAGS)" -t ${IMG} .
 
-.PHONY: container-push
-container-push: ## Push container image with the manager.
+.PHONY: docker-push
+docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
+
+.PHONY: container-build
+container-build: docker-build ## Alias for docker-build.
+
+.PHONY: container-push
+container-push: docker-push ## Alias for docker-push.
 
 ##@ Helm
 
