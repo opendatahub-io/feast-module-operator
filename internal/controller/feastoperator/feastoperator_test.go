@@ -173,6 +173,26 @@ func TestSetKustomizedParamsInvalidOIDC(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("invalid OIDC issuer URL"))
 }
 
+func TestGetSetPlatformRelease(t *testing.T) {
+	g := NewWithT(t)
+
+	obj := newTestFeastOperator()
+
+	// Initially empty
+	g.Expect(getPlatformRelease(obj)).To(Equal(""))
+
+	// Set a version
+	setPlatformRelease(obj, "2.20.0")
+	g.Expect(getPlatformRelease(obj)).To(Equal("2.20.0"))
+	g.Expect(obj.Status.Releases).To(HaveLen(1))
+	g.Expect(obj.Status.Releases[0].Name).To(Equal("platform"))
+
+	// Update the version
+	setPlatformRelease(obj, "2.21.0")
+	g.Expect(getPlatformRelease(obj)).To(Equal("2.21.0"))
+	g.Expect(obj.Status.Releases).To(HaveLen(1))
+}
+
 func TestParseAndValidateOIDCIssuerURL(t *testing.T) {
 	tests := []struct {
 		name    string
