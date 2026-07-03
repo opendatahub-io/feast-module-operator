@@ -41,6 +41,7 @@ import (
 	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/handlers"
 	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/predicates"
 	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/predicates/component"
+	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/predicates/resources"
 	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/reconciler"
 	odhtypes "github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/types"
 	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/metadata/labels"
@@ -99,8 +100,16 @@ func NewReconciler(
 			reconciler.WithPredicates(
 				component.ForLabel(labels.ODH.Component(componentName), labels.True)),
 		).
+		Watches(
+			&corev1.ConfigMap{},
+			reconciler.WithEventHandler(
+				handlers.ToNamed(componentApi.FeastOperatorInstanceName)),
+			reconciler.WithPredicates(
+				resources.CreatedOrUpdatedOrDeletedNamed(platformConfigCMName)),
+		).
 		WithAction(m.initialize).
 		WithAction(m.upgradeIfNeeded).
+		WithAction(m.reconcilePlatformVersion).
 		WithAction(m.setKustomizedParams).
 		WithAction(releases.NewAction()).
 		WithAction(kustomize.NewAction(
