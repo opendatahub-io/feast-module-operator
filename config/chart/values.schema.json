@@ -63,6 +63,12 @@
     },
     "Values": {
       "properties": {
+        "nameOverride": {
+          "type": "string"
+        },
+        "fullnameOverride": {
+          "type": "string"
+        },
         "image": {
           "$ref": "#/$defs/ImageSpec"
         },
