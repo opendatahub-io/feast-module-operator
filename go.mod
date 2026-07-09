@@ -7,7 +7,6 @@ require (
 	github.com/invopop/jsonschema v0.14.0
 	github.com/lburgazzoli/gomega-matchers v0.4.1-0.20260219145423-4061a5fb8799
 	github.com/onsi/gomega v1.41.0
-	github.com/opendatahub-io/odh-platform-utilities v0.0.0-20260528075406-6d9164111905
 	github.com/opendatahub-io/opendatahub-operator/v2 v2.0.0-20260623231533-8c88244c7795
 	github.com/operator-framework/api v0.42.0
 	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.74.0
@@ -78,6 +77,7 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
+	github.com/opendatahub-io/odh-platform-utilities v0.0.0-20260528075406-6d9164111905 // indirect
 	github.com/openshift/api v0.0.0-20260521125114-09730f85d883 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect

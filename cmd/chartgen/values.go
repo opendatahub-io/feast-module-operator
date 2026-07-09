@@ -44,7 +44,20 @@ const (
 )
 
 // Values defines the Helm chart values structure.
+// All fields that are referenced by chart templates must be present in the
+// serialised values.yaml (even when empty) because the ODH operator renders
+// Helm charts with Go's missingkey=error option.
 type Values struct {
+	// Namespace is the target namespace for namespace-scoped resources.
+	// Injected by the ODH operator via NamespaceValueKey at render time.
+	Namespace string `json:"namespace"`
+
+	// NameOverride overrides the chart name used in resource labels.
+	NameOverride string `json:"nameOverride"`
+
+	// FullnameOverride overrides the release fullname used in resource names.
+	FullnameOverride string `json:"fullnameOverride"`
+
 	// Image configures the container image for the manager.
 	Image ImageSpec `json:"image"`
 
@@ -63,40 +76,40 @@ type Values struct {
 	// ImagePullSecret is the name of a pull secret for the manager image.
 	// When set it is also injected into the controller ConfigMap so the
 	// operator can propagate it to child resources.
-	ImagePullSecret string `json:"imagePullSecret,omitempty"`
+	ImagePullSecret string `json:"imagePullSecret"`
 
 	// Config provides additional controller configuration entries that are
 	// merged into the controller ConfigMap.
-	Config map[string]string `json:"config,omitempty"`
+	Config map[string]string `json:"config"`
 }
 
 // ImageSpec describes a container image.
 type ImageSpec struct {
 	Repository string `json:"repository"`
 	Tag        string `json:"tag"`
-	FullRef    string `json:"fullRef,omitempty"`
+	FullRef    string `json:"fullRef"`
 }
 
 // ResourceSpec mirrors corev1.ResourceRequirements but with simpler
 // serialization for Helm values.
 type ResourceSpec struct {
-	Limits   ResourceList `json:"limits,omitempty"`
-	Requests ResourceList `json:"requests,omitempty"`
+	Limits   ResourceList `json:"limits"`
+	Requests ResourceList `json:"requests"`
 }
 
 // ResourceList maps resource names to quantities.
 type ResourceList struct {
-	CPU    string `json:"cpu,omitempty"`
-	Memory string `json:"memory,omitempty"`
+	CPU    string `json:"cpu"`
+	Memory string `json:"memory"`
 }
 
 // ServiceAccountSpec configures the operator's ServiceAccount.
 type ServiceAccountSpec struct {
 	// Name overrides the ServiceAccount name (defaults to release fullname).
-	Name string `json:"name,omitempty"`
+	Name string `json:"name"`
 
 	// Annotations are additional annotations on the ServiceAccount.
-	Annotations map[string]string `json:"annotations,omitempty"`
+	Annotations map[string]string `json:"annotations"`
 }
 
 // DefaultValues returns a Values instance with sensible defaults.
@@ -118,6 +131,9 @@ func DefaultValues() Values {
 			},
 		},
 		LeaderElect: true,
+		ServiceAccount: ServiceAccountSpec{
+			Annotations: map[string]string{},
+		},
 		Config: map[string]string{
 			"platform-name":    "OpenDataHub",
 			"platform-version": "unknown",
