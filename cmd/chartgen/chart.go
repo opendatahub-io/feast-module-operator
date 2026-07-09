@@ -39,7 +39,7 @@ const (
 	yamlFieldData               = "data:"
 	yamlFieldMetadata           = "metadata:"
 
-	tplReleaseNamespace   = "namespace: {{ .Release.Namespace }}"
+	tplReleaseNamespace   = "namespace: {{ .Values.namespace }}"
 	tplServiceAccountName = `{{ default (include "chart.fullname" .) .Values.serviceAccount.name }}`
 
 	annotationCertManagerInjectCAFrom = "cert-manager.io/inject-ca-from"
@@ -238,7 +238,7 @@ func replaceCertificateDNSNames(raw string) string {
 			if len(parts) >= 3 {
 				indent := line[:len(line)-len(strings.TrimLeft(line, " "))]
 				suffix := parts[2] // "svc" or "svc.cluster.local"
-				lines[i] = indent + "- " + parts[0] + ".{{ .Release.Namespace }}." + suffix
+				lines[i] = indent + "- " + parts[0] + ".{{ .Values.namespace }}." + suffix
 			}
 		}
 	}
@@ -517,7 +517,7 @@ func replaceWebhookNamespace(raw string) string {
 				valueParts := strings.SplitN(value, "/", 2)
 				if len(valueParts) == 2 {
 					indent := line[:len(line)-len(strings.TrimLeft(line, " "))]
-					lines[i] = indent + strings.TrimSpace(parts[0]) + ": {{ .Release.Namespace }}/" + valueParts[1]
+					lines[i] = indent + strings.TrimSpace(parts[0]) + ": {{ .Values.namespace }}/" + valueParts[1]
 				}
 			}
 		}
@@ -526,16 +526,21 @@ func replaceWebhookNamespace(raw string) string {
 	return strings.Join(lines, "\n")
 }
 
-// injectConfigMapValues adds Helm template directives to merge
-// .Values.config and .Values.imagePullSecret into the ConfigMap data.
+// injectConfigMapValues replaces hardcoded data entries with Helm template
+// directives that merge .Values.config and .Values.imagePullSecret. Existing
+// key-value pairs under data: are dropped to avoid duplicate-key errors since
+// they are supplied via .Values.config at render time.
 func injectConfigMapValues(raw string) string {
 	lines := strings.Split(raw, "\n")
 	var result []string
+	inData := false
 
 	for _, line := range lines {
-		result = append(result, line)
 		trimmed := strings.TrimSpace(line)
+
 		if trimmed == yamlFieldData {
+			inData = true
+			result = append(result, line)
 			indent := line[:len(line)-len(strings.TrimLeft(line, " "))]
 			result = append(result,
 				indent+"  {{- with .Values.imagePullSecret }}",
@@ -545,7 +550,18 @@ func injectConfigMapValues(raw string) string {
 				indent+"  {{ $key }}: {{ $val | quote }}",
 				indent+"  {{- end }}",
 			)
+			continue
 		}
+
+		if inData {
+			if len(trimmed) > 0 && !strings.HasPrefix(line, "  ") {
+				inData = false
+			} else {
+				continue
+			}
+		}
+
+		result = append(result, line)
 	}
 
 	return strings.Join(result, "\n")

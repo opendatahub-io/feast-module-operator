@@ -261,9 +261,6 @@ spec:
                 x-kubernetes-list-type: map
             type: object
         type: object
-        x-kubernetes-validations:
-        - message: FeastOperator name must be default-feastoperator
-          rule: self.metadata.name == 'default-feastoperator'
     served: true
     storage: false
     subresources:

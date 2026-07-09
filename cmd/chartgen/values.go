@@ -48,6 +48,10 @@ const (
 // serialised values.yaml (even when empty) because the ODH operator renders
 // Helm charts with Go's missingkey=error option.
 type Values struct {
+	// Namespace is the target namespace for namespace-scoped resources.
+	// Injected by the ODH operator via NamespaceValueKey at render time.
+	Namespace string `json:"namespace"`
+
 	// NameOverride overrides the chart name used in resource labels.
 	NameOverride string `json:"nameOverride"`
 
