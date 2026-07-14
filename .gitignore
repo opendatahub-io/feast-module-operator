@@ -18,9 +18,6 @@ covcounters*
 *.swo
 
 
-# Downloaded manifests (fetched by get-manifests.sh)
-config/manifests/feastoperator/
-
 # Kubeconfig (local dev)
 .kube/
 
