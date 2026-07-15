@@ -81,6 +81,12 @@ type Values struct {
 	// Config provides additional controller configuration entries that are
 	// merged into the controller ConfigMap.
 	Config map[string]string `json:"config"`
+
+	// UpgradeGates declares admin acknowledgment gates that block platform
+	// provisioning until an administrator explicitly acknowledges them.
+	// Empty by default; populated by the ODH operator when a breaking
+	// change requires admin intervention before provisioning proceeds.
+	UpgradeGates map[string]string `json:"upgradeGates,omitempty" jsonschema:"nullable"`
 }
 
 // ImageSpec describes a container image.
