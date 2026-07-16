@@ -42,6 +42,19 @@ make test
 make test-integration
 ```
 
+### Operator Chaos Validation
+
+This repository uses [operator-chaos](https://github.com/opendatahub-io/operator-chaos)
+for shift-left upgrade validation. On every pull request that modifies `api/`,
+`internal/controller/`, `config/`, or `knowledge`, automated checks validate:
+
+- Breaking changes in the knowledge model (`chaos/knowledge/feast.yaml`)
+- Breaking changes in the `FeastOperator` CRD schema
+- Upgrade simulation (dry-run mode)
+
+The validation runs automatically via GitHub Actions. See `.github/workflows/operator-chaos.yml`
+for implementation details.
+
 ### Build Container Image
 
 ```bash
