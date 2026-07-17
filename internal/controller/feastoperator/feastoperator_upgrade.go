@@ -39,7 +39,7 @@ func (m *Module) upgradeIfNeeded(ctx context.Context, rr *odhtypes.Reconciliatio
 
 	prev, err := semver.Parse(prevVersion)
 	if err != nil {
-		return nil
+		return fmt.Errorf("failed to parse previous platform version %q: %w", prevVersion, err)
 	}
 
 	if !rr.Release.Version.GT(prev) {
