@@ -52,9 +52,9 @@ func (ft *foundationTests) testReleaseStatus(t *testing.T) {
 	g := NewWithT(t)
 
 	g.Eventually(k.Get(ft.module)).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(And(
-		jq.Match(`.status.release.version == "%s"`, operatorReleaseVersion),
-		jq.Match(`.status.release.name == "%s"`,
-			operatorCfgData[moduleconfig.KeyPlatformName]),
+		jq.Match(`.status.releases | length > 0`),
+		jq.Match(`.status.releases[] | select(.name == "platform") | .version == "%s"`,
+			operatorReleaseVersion),
 	))
 }
 

@@ -42,9 +42,6 @@ type FeastOperatorSpec struct {
 type FeastOperatorStatus struct {
 	common.Status                 `json:",inline"`
 	common.ComponentReleaseStatus `json:",inline"`
-
-	// Release reports the operator version and platform.
-	Release common.Release `json:"release,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -53,7 +50,6 @@ type FeastOperatorStatus struct {
 // +kubebuilder:validation:XValidation:rule="self.metadata.name == 'default-feastoperator'",message="FeastOperator name must be default-feastoperator"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`,description="Ready"
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`,description="Reason"
-// +kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.status.release.version`,description="Module Version"
 
 // FeastOperator is the Schema for the feastoperators API.
 type FeastOperator struct {

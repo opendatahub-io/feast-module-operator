@@ -106,15 +106,12 @@ func (ft *foundationTests) testReleaseStatus(t *testing.T) {
 
 	g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(operatorCfg), operatorCfg)).To(Succeed())
 
-	cfg := &moduleconfig.Config{
-		PlatformName:    operatorCfg.Data[moduleconfig.KeyPlatformName],
-		PlatformVersion: operatorCfg.Data[moduleconfig.KeyPlatformVersion],
-	}
-	expectedRelease := cfg.Release()
+	expectedVersion := operatorCfg.Data[moduleconfig.KeyPlatformVersion]
 
 	g.Eventually(k.Get(ft.module)).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(And(
-		jq.Match(`.status.release.version == "%s"`, expectedRelease.Version.String()),
-		jq.Match(`.status.release.name == "%s"`, string(expectedRelease.Name)),
+		jq.Match(`.status.releases | length > 0`),
+		jq.Match(`.status.releases[] | select(.name == "platform") | .version == "%s"`,
+			expectedVersion),
 	))
 }
 

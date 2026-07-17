@@ -80,15 +80,3 @@ func (m *Module) initialize(_ context.Context, rr *odhtypes.ReconciliationReques
 	rr.Manifests = append(rr.Manifests, m.manifestInfo)
 	return nil
 }
-
-// reportStatus populates the release status and config values.
-func (m *Module) reportStatus(_ context.Context, rr *odhtypes.ReconciliationRequest) error {
-	obj, ok := rr.Instance.(*componentApi.FeastOperator)
-	if !ok {
-		return fmt.Errorf("instance is not a FeastOperator")
-	}
-
-	obj.Status.Release = rr.Release
-
-	return nil
-}

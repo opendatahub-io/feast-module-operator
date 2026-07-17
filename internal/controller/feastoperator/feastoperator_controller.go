@@ -122,7 +122,6 @@ func NewReconciler(
 			deploy.WithApplyOrder(),
 		)).
 		WithAction(deployments.NewAction()).
-		WithAction(m.reportStatus).
 		WithAction(gc.NewAction(
 			gc.InNamespace(cfg.ApplicationsNamespace),
 		)).

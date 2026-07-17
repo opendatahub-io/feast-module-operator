@@ -23,9 +23,6 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/blang/semver/v4"
-	ofVersion "github.com/operator-framework/api/pkg/lib/version"
-
 	componentApi "github.com/opendatahub-io/feast-module-operator/api/components/v1"
 	moduleconfig "github.com/opendatahub-io/feast-module-operator/pkg/config"
 	"github.com/opendatahub-io/opendatahub-operator/v2/api/common"
@@ -114,24 +111,10 @@ func TestUpgradeIfNeededSameVersion(t *testing.T) {
 
 	m := newTestModule(t)
 	obj := newTestFeastOperator()
-	obj.Status.Release.Version = ofVersion.OperatorVersion{Version: semver.MustParse("1.0.0")}
+	setPlatformRelease(obj, "1.0.0")
 	rr := newTestRR(obj)
 
 	g.Expect(m.upgradeIfNeeded(context.Background(), rr)).To(Succeed())
-}
-
-func TestReportStatus(t *testing.T) {
-	g := NewWithT(t)
-
-	m := newTestModule(t)
-	obj := newTestFeastOperator()
-	rr := newTestRR(obj)
-
-	g.Expect(m.initialize(context.Background(), rr)).To(Succeed())
-	g.Expect(m.reportStatus(context.Background(), rr)).To(Succeed())
-
-	g.Expect(obj.Status.Release.Version.String()).To(Equal("1.0.0"))
-	g.Expect(string(obj.Status.Release.Name)).To(Equal(string(cluster.OpenDataHub)))
 }
 
 func TestSetKustomizedParamsNoOIDC(t *testing.T) {
