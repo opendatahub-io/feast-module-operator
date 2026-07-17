@@ -141,7 +141,7 @@ func (ft *foundationTests) testPlatformLabels(t *testing.T) {
 			operatorCfg.Data[moduleconfig.KeyPlatformName]),
 		jq.Match(`.metadata.annotations."%s" == "%s"`,
 			annotationVersion,
-			module.Status.Release.Version),
+			operatorCfg.Data[moduleconfig.KeyPlatformVersion]),
 	))
 }
 
