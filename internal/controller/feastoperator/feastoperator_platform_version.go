@@ -25,7 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	componentApi "github.com/opendatahub-io/feast-module-operator/api/components/v1"
+	componentApi "github.com/opendatahub-io/feast-module-operator/api/components/v1alpha1"
 	"github.com/opendatahub-io/opendatahub-operator/v2/api/common"
 	odhtypes "github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/types"
 )

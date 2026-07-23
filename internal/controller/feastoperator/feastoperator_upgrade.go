@@ -22,7 +22,7 @@ import (
 
 	"github.com/blang/semver/v4"
 
-	componentApi "github.com/opendatahub-io/feast-module-operator/api/components/v1"
+	componentApi "github.com/opendatahub-io/feast-module-operator/api/components/v1alpha1"
 	odhtypes "github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/types"
 )
 

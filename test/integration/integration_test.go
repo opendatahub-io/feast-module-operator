@@ -48,7 +48,7 @@ import (
 	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
 	k8sm "github.com/lburgazzoli/gomega-matchers/pkg/matchers/k8s"
 
-	componentsv1alpha1 "github.com/opendatahub-io/feast-module-operator/api/components/v1"
+	componentsv1alpha1 "github.com/opendatahub-io/feast-module-operator/api/components/v1alpha1"
 	feastoperatorcontroller "github.com/opendatahub-io/feast-module-operator/internal/controller/feastoperator"
 	moduleconfig "github.com/opendatahub-io/feast-module-operator/pkg/config"
 	"github.com/opendatahub-io/feast-module-operator/test/support"

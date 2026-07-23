@@ -7,7 +7,7 @@ the modular handler framework.
 ## Overview
 
 This operator watches `FeastOperator` Custom Resources (API version
-`components.platform.opendatahub.io/v1`) and deploys the upstream
+`components.platform.opendatahub.io/v1alpha1`) and deploys the upstream
 [feast-operator](https://github.com/opendatahub-io/feast) using bundled
 kustomize manifests.
 

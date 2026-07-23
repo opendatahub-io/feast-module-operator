@@ -1,4 +1,4 @@
 ## Append samples of your project ##
 resources:
-- components_v1_feastoperator.yaml
+- components_v1alpha1_feastoperator.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
