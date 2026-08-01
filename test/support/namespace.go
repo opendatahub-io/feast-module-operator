@@ -5,6 +5,7 @@ import "os"
 const (
 	DefaultOperatorNamespace        = "opendatahub-feast-system"
 	DefaultIntegrationTestNamespace = "integration-test"
+	DefaultApplicationsNamespace    = "redhat-ods-applications"
 )
 
 func OperatorNamespace() string {

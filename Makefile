@@ -102,6 +102,14 @@ test-e2e-cleanup: ## Clean up e2e test resources and uninstall operator from the
 .PHONY: cleanup-e2e
 cleanup-e2e: test-e2e-cleanup ## Alias for test-e2e-cleanup.
 
+.PHONY: test-e2e-upgrade-pre
+test-e2e-upgrade-pre: ## Run pre-upgrade smoke tests (operator must be deployed).
+	go test ./test/e2e/upgrade/pre/ -v -tags=e2e -timeout 10m
+
+.PHONY: test-e2e-upgrade-post
+test-e2e-upgrade-post: ## Run post-upgrade smoke tests (operator must be upgraded).
+	go test ./test/e2e/upgrade/post/ -v -tags=e2e -timeout 10m
+
 .PHONY: lint
 lint: ## Run golangci-lint linter.
 	$(GOLANGCI_LINT) run --build-tags integration,e2e,upgrade
