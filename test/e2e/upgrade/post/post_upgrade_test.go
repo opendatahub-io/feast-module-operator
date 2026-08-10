@@ -186,6 +186,9 @@ func TestPostUpgradeFeastDeploymentRolledOut(t *testing.T) {
 // still exists after the upgrade. This ensures data persistence through the upgrade.
 // The ConfigMap is deleted at the end of the test to avoid leaving test data behind.
 func TestPostUpgradeTestDataSurvived(t *testing.T) {
+	// Not applicable on release-3.5: previous-release upgrade scenarios do not rely on this test data marker.
+	t.Skip("Skipping ConfigMap survival check on RHOAI 3.5; not applicable for previous-release upgrades")
+
 	g := NewWithT(t)
 
 	cmName := "feast-upgrade-test-data"
