@@ -30,6 +30,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	k8serr "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -56,6 +57,18 @@ const (
 
 	operatorConfigMapName = "opendatahub-feast-config"
 	moduleCRDName         = "feastoperators.components.platform.opendatahub.io"
+
+	operatorDeployName         = "opendatahub-feast-operator"
+	workloadDeployName         = "feast-operator-controller-manager"
+	workloadMetricsServiceName = "feast-operator-controller-manager-metrics-service"
+
+	odhComponentLabel = "app.opendatahub.io/feastoperator"
+	labelAppName      = "app.kubernetes.io/name"
+	labelK8sPartOf    = "app.kubernetes.io/part-of"
+	labelControlPlane = "control-plane"
+
+	oidcIssuerEnvName = "OIDC_ISSUER_URL"
+	testOIDCIssuerURL = "https://e2e-oidc.example.com/realms/test"
 )
 
 var (
@@ -101,6 +114,7 @@ func runTestMain(m *testing.M) int {
 type feastE2ETest struct {
 	module            *componentsv1alpha1.FeastOperator
 	operatorNamespace string
+	createdByTest     bool
 }
 
 func TestFeastOperator(t *testing.T) {
@@ -114,13 +128,18 @@ func TestFeastOperator(t *testing.T) {
 	}
 	foundation := newFoundationTests(suite)
 
-	// Clean up any leftover CR from a previous run.
-	_ = k8sClient.Delete(ctx, suite.module)
-	waitForSingletonDeleted(t, suite.module)
-
-	t.Cleanup(func() {
-		_ = k8sClient.Delete(ctx, suite.module)
-	})
+	err := k8sClient.Get(ctx, client.ObjectKeyFromObject(suite.module), suite.module)
+	switch {
+	case err == nil:
+		t.Logf("using existing FeastOperator %s (operator namespace %s)", suite.module.Name, suite.operatorNamespace)
+	case k8serr.IsNotFound(err):
+		suite.createdByTest = true
+		t.Cleanup(func() {
+			_ = k8sClient.Delete(ctx, suite.module)
+		})
+	default:
+		t.Fatalf("failed to get FeastOperator %s: %v", suite.module.Name, err)
+	}
 
 	// Gate: if the operator is not running, fail immediately — don't
 	// let subsequent tests hang waiting for resources that won't appear.
@@ -132,11 +151,16 @@ func TestFeastOperator(t *testing.T) {
 func waitForDeleted(t *testing.T, obj client.Object) {
 	t.Helper()
 
+	key := client.ObjectKeyFromObject(obj)
 	g := NewWithT(t)
 	g.Eventually(func(g Gomega) {
 		fresh := obj.DeepCopyObject().(client.Object)
-		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(obj), fresh)
-		g.Expect(k8serr.IsNotFound(err)).To(BeTrue())
+		err := k8sClient.Get(ctx, key, fresh)
+		g.Expect(err).To(HaveOccurred(),
+			"expected %T %s to be deleted, but it still exists (finalizers=%v)",
+			obj, key, fresh.GetFinalizers())
+		g.Expect(k8serr.IsNotFound(err)).To(BeTrue(),
+			"expected %T %s to be NotFound, got: %v", obj, key, err)
 	}).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(Succeed())
 }
 
@@ -155,4 +179,16 @@ func eventuallyDeploymentReady(t *testing.T, deploy *appsv1.Deployment) {
 	g.Eventually(k.Get(deploy)).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(
 		jq.Match(`.status.readyReplicas >= 1`),
 	)
+}
+
+func waitForLabeledResourcesGone(t *testing.T, list client.ObjectList, opts ...client.ListOption) {
+	t.Helper()
+
+	g := NewWithT(t)
+	g.Eventually(func(g Gomega) {
+		g.Expect(k8sClient.List(ctx, list, opts...)).To(Succeed())
+		items, err := meta.ExtractList(list)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(items).To(BeEmpty())
+	}).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(Succeed())
 }

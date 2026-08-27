@@ -3,7 +3,10 @@ package support
 import "os"
 
 const (
-	DefaultOperatorNamespace        = "opendatahub-feast-system"
+	// DefaultOperatorNamespace is where the module operator and feast-operator
+	// operands run on RHOAI. Override with OPERATOR_NAMESPACE for Helm-local
+	// e2e (opendatahub-feast-system).
+	DefaultOperatorNamespace        = "redhat-ods-applications"
 	DefaultIntegrationTestNamespace = "integration-test"
 	DefaultApplicationsNamespace    = "redhat-ods-applications"
 )
