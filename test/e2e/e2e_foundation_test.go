@@ -154,13 +154,29 @@ func (ft *foundationTests) testDeploymentsAvailable(t *testing.T) {
 func (ft *foundationTests) testReleaseStatus(t *testing.T) {
 	g := NewWithT(t)
 
-	module := ft.module.DeepCopy()
-	g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(module), module)).To(Succeed())
+	// The platform version handshake works via the odh-feastoperator-config
+	// ConfigMap: the orchestrator stamps platform.opendatahub.io/version on
+	// that ConfigMap (not on the FeastOperator CR itself), and the module
+	// controller reads its "platformVersion" data key into
+	// status.releases[name="platform"]. There is no annotation on the
+	// FeastOperator CR to assert on — the status.releases entry below is
+	// the correct (and only) place this is surfaced on the module CR.
+	platformCfgMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      platformConfigMapName,
+			Namespace: ft.operatorNamespace,
+		},
+	}
 
-	expectedPlatformVersion := module.GetAnnotations()[annotationVersion]
-	g.Expect(expectedPlatformVersion).NotTo(BeEmpty(),
-		"FeastOperator should have %s annotation from the platform", annotationVersion)
-	g.Expect(expectedPlatformVersion).NotTo(Equal("unknown"))
+	var expectedPlatformVersion string
+	g.Eventually(func(g Gomega) {
+		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(platformCfgMap), platformCfgMap)).To(Succeed())
+
+		expectedPlatformVersion = platformCfgMap.GetAnnotations()[annotationVersion]
+		g.Expect(expectedPlatformVersion).NotTo(BeEmpty(),
+			"%s ConfigMap should have %s annotation from the platform", platformConfigMapName, annotationVersion)
+		g.Expect(expectedPlatformVersion).NotTo(Equal("unknown"))
+	}).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(Succeed())
 
 	g.Eventually(k.Get(ft.module)).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(And(
 		jq.Match(`.status.releases | length > 0`),

@@ -58,6 +58,12 @@ const (
 	operatorConfigMapName = "opendatahub-feast-config"
 	moduleCRDName         = "feastoperators.components.platform.opendatahub.io"
 
+	// platformConfigMapName is the ConfigMap the ODH platform orchestrator
+	// writes platform.opendatahub.io/* annotations and the platformVersion
+	// data key onto. The module controller reads it to populate
+	// status.releases[name="platform"] on the FeastOperator CR.
+	platformConfigMapName = "odh-feastoperator-config"
+
 	operatorDeployName         = "opendatahub-feast-operator"
 	workloadDeployName         = "feast-operator-controller-manager"
 	workloadMetricsServiceName = "feast-operator-controller-manager-metrics-service"
