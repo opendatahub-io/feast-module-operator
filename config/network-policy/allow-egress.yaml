@@ -1,0 +1,29 @@
+# Module-bundle egress policy for the feast-module-operator controller pod.
+# Lifecycle: rendered by opendatahub-operator with the module bundle; the
+# module controller MUST NOT reconcile this object.
+#
+# Permits all outbound traffic.  The controller requires egress to the
+# Kubernetes API server (address varies per cluster), CoreDNS, and
+# container registries (init container image pull).  Narrower
+# NetworkPolicy rules cannot reliably represent these destinations, so
+# explicit allow-all egress is used per ADR §Explicit egress behavior.
+#
+# External controls: RBAC limits the ServiceAccount's API-server
+# authority; TLS is enforced on API-server and registry connections.
+#
+# Ref: ODH-ADR-Operator-0016 §Explicit egress behavior
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/name: opendatahub-feast-operator
+  name: allow-egress
+  namespace: system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: opendatahub-feast-operator
+  policyTypes:
+    - Egress
+  egress:
+    - {}
