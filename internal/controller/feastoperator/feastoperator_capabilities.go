@@ -39,7 +39,8 @@ import (
 )
 
 const (
-	capabilitiesConfigMapName = "feast-capabilities-config"
+	capabilitiesConfigMapName      = "feast-capabilities-config"
+	capabilitiesConfigMapFinalizer = "components.platform.opendatahub.io/feast-capabilities"
 
 	capabilitiesKeyFeatureStoreEnabled = "featureStoreEnabled"
 	capabilitiesKeyDataRegistryEnabled = "dataRegistryEnabled"
@@ -80,10 +81,16 @@ func (m *Module) reconcileCapabilitiesConfigMap(ctx context.Context, rr *odhtype
 	}
 
 	op, err := controllerutil.CreateOrUpdate(ctx, rr.Client, cm, func() error {
+		if cm.DeletionTimestamp != nil {
+			// Let an explicit deletion finish, then recreate the ConfigMap on retry.
+			controllerutil.RemoveFinalizer(cm, capabilitiesConfigMapFinalizer)
+			return nil
+		}
 		if cm.Labels == nil {
 			cm.Labels = map[string]string{}
 		}
 		cm.Labels[labels.ODH.Component(componentName)] = labels.True
+		controllerutil.AddFinalizer(cm, capabilitiesConfigMapFinalizer)
 		cm.Data = map[string]string{
 			capabilitiesKeyFeatureStoreEnabled: boolString(fsEnabled),
 			capabilitiesKeyDataRegistryEnabled: boolString(drEnabled),
@@ -95,6 +102,9 @@ func (m *Module) reconcileCapabilitiesConfigMap(ctx context.Context, rr *odhtype
 	})
 	if err != nil {
 		return fmt.Errorf("failed to reconcile capabilities ConfigMap: %w", err)
+	}
+	if cm.DeletionTimestamp != nil {
+		return fmt.Errorf("capabilities ConfigMap %s is being deleted; waiting to recreate it", capabilitiesConfigMapName)
 	}
 
 	log.V(1).Info("Reconciled capabilities ConfigMap",

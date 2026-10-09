@@ -290,13 +290,14 @@ func TestCleanupClusterResourcesRunsEvenWhenCapabilitiesManaged(t *testing.T) {
 			Labels: map[string]string{
 				labels.ODH.Component(componentName): labels.True,
 			},
+			Finalizers: []string{capabilitiesConfigMapFinalizer},
 		},
 	}
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 		Name: dataRegistryNamespaceName,
 		Labels: map[string]string{
 			dataRegistryEnabledLabelKey: dataRegistryEnabledLabelValue,
-			"user-label":              "preserved",
+			"user-label":                "preserved",
 		},
 	}}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(feast, cm, ns).Build()

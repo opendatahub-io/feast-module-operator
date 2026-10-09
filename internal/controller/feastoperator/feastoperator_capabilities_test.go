@@ -104,6 +104,7 @@ func TestReconcileCapabilitiesConfigMapCreatesConfigMap(t *testing.T) {
 	g.Expect(cm.Labels[labels.ODH.Component(componentName)]).To(Equal(labels.True))
 	g.Expect(cm.OwnerReferences).To(HaveLen(1))
 	g.Expect(cm.OwnerReferences[0].Name).To(Equal(componentApi.FeastOperatorInstanceName))
+	g.Expect(cm.Finalizers).To(ContainElement(capabilitiesConfigMapFinalizer))
 }
 
 func TestReconcileCapabilitiesConfigMapUpdatesExistingConfigMap(t *testing.T) {
@@ -135,6 +136,27 @@ func TestReconcileCapabilitiesConfigMapUpdatesExistingConfigMap(t *testing.T) {
 	}, cm)).To(Succeed())
 	g.Expect(cm.Data[capabilitiesKeyFeatureStoreEnabled]).To(Equal("false"))
 	g.Expect(cm.Data[capabilitiesKeyDataRegistryEnabled]).To(Equal("true"))
+	g.Expect(cm.Finalizers).To(ContainElement(capabilitiesConfigMapFinalizer))
+}
+
+func TestReconcileCapabilitiesConfigMapRecreatesDeletedConfigMap(t *testing.T) {
+	g := NewWithT(t)
+	ctx := context.Background()
+	scheme := initCapabilitiesTestScheme()
+	feast := newTestFeastOperator()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(feast).Build()
+	m := newCapabilitiesTestModule(t, true, true)
+	rr := newCapabilitiesRR(t, cl, feast, m)
+	g.Expect(m.reconcileCapabilitiesConfigMap(ctx, rr)).To(Succeed())
+
+	key := client.ObjectKey{Name: capabilitiesConfigMapName, Namespace: "test-ns"}
+	cm := &corev1.ConfigMap{}
+	g.Expect(cl.Get(ctx, key, cm)).To(Succeed())
+	g.Expect(cl.Delete(ctx, cm)).To(Succeed())
+	g.Expect(m.reconcileCapabilitiesConfigMap(ctx, rr)).NotTo(Succeed())
+	g.Expect(m.reconcileCapabilitiesConfigMap(ctx, rr)).To(Succeed())
+	g.Expect(cl.Get(ctx, key, cm)).To(Succeed())
+	g.Expect(cm.Finalizers).To(ContainElement(capabilitiesConfigMapFinalizer))
 }
 
 func TestReconcileCapabilitiesFromSpecOverridesEnv(t *testing.T) {

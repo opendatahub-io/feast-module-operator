@@ -43,6 +43,7 @@ func (ct *capabilityTests) testCapabilitiesConfigMap(t *testing.T) {
 		g.Expect(cm.Labels[labels.ODH.Component(componentsv1alpha1.FeastOperatorComponentName)]).To(Equal(labels.True))
 		g.Expect(cm.OwnerReferences).To(HaveLen(1))
 		g.Expect(cm.OwnerReferences[0].Kind).To(Equal("FeastOperator"))
+		g.Expect(cm.Finalizers).To(ContainElement("components.platform.opendatahub.io/feast-capabilities"))
 	}).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(Succeed())
 }
 
