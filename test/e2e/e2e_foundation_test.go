@@ -101,11 +101,12 @@ func (ft *foundationTests) testOperatorConfigMap(t *testing.T) {
 
 	// The chart deploys the operator config ConfigMap under the well-known
 	// platform name (odh-data-config) so the platform operator can merge
-	// its managed keys into it. The platformVersion key itself is
-	// platform-managed and must not be shipped by the module.
+	// its managed keys into it. A fresh chart install leaves platformVersion
+	// unset. On a live OpenShift AI cluster the Platform already owns the
+	// ConfigMap and publishes the key; that value is platform-managed.
 	g.Eventually(k.Get(ft.operatorCfgMap)).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(And(
 		jq.Match(`.metadata.name == "%s"`, feastoperatorcontroller.PlatformConfigCMName),
-		jq.Match(`.data."%s" == null`, moduleconfig.KeyPlatformVersion),
+		jq.Match(`(.data."%s" == null) or ((.metadata.ownerReferences // []) | map(select(.kind == "Platform")) | length > 0)`, moduleconfig.KeyPlatformVersion),
 	))
 }
 
@@ -204,28 +205,43 @@ func (ft *foundationTests) testDeploymentsAvailable(t *testing.T) {
 func (ft *foundationTests) testReleaseStatus(t *testing.T) {
 	g := NewWithT(t)
 
-	// Emulate the ODH platform operator: set the platform version on the
-	// operator config ConfigMap deployed by the chart. The controller
-	// watches this ConfigMap, so the update triggers a reconcile and the
-	// version handshake records the platform release in the FeastOperator
-	// status.
 	platformCM := &corev1.ConfigMap{}
 	g.Expect(k8sClient.Get(ctx, client.ObjectKey{
 		Name:      feastoperatorcontroller.PlatformConfigCMName,
 		Namespace: ft.operatorNamespace,
 	}, platformCM)).To(Succeed())
-	if platformCM.Data == nil {
-		platformCM.Data = map[string]string{}
+
+	// A live OpenShift AI cluster already publishes platformVersion through
+	// the Platform that owns odh-data-config, and that owner reverts a
+	// client update. A chart-only install has no such owner, so emulate the
+	// platform handshake with a fixed version.
+	expectedVersion := e2ePlatformVersion
+	if configMapOwnedByPlatform(platformCM) {
+		expectedVersion = platformCM.Data[feastoperatorcontroller.PlatformVersionKey]
+		g.Expect(expectedVersion).NotTo(BeEmpty(), "platform-owned ConfigMap should publish platformVersion")
+	} else {
+		if platformCM.Data == nil {
+			platformCM.Data = map[string]string{}
+		}
+		platformCM.Data[feastoperatorcontroller.PlatformVersionKey] = e2ePlatformVersion
+		g.Expect(k8sClient.Update(ctx, platformCM)).To(Succeed())
 	}
-	platformCM.Data[feastoperatorcontroller.PlatformVersionKey] = e2ePlatformVersion
-	g.Expect(k8sClient.Update(ctx, platformCM)).To(Succeed())
 
 	g.Eventually(k.Get(ft.module)).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(And(
 		jq.Match(`.status.releases | length > 0`),
 		jq.Match(`.status.releases[] | select(.name == "Feast") | .version != ""`),
 		jq.Match(`.status.releases[] | select(.name == "platform") | .version == "%s"`,
-			e2ePlatformVersion),
+			expectedVersion),
 	))
+}
+
+func configMapOwnedByPlatform(cm *corev1.ConfigMap) bool {
+	for _, ref := range cm.GetOwnerReferences() {
+		if ref.Kind == "Platform" {
+			return true
+		}
+	}
+	return false
 }
 
 func (ft *foundationTests) testPlatformLabels(t *testing.T) {
