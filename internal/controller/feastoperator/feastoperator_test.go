@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -31,8 +32,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	componentApi "github.com/opendatahub-io/feast-module-operator/api/components/v1alpha1"
 	moduleconfig "github.com/opendatahub-io/feast-module-operator/pkg/config"
@@ -415,6 +418,223 @@ func TestCleanupClusterResourcesRunsWhenBothCapabilitiesRemoved(t *testing.T) {
 	crList := &rbacv1.ClusterRoleList{}
 	g.Expect(cl.List(context.Background(), crList)).To(Succeed())
 	g.Expect(crList.Items).To(BeEmpty())
+}
+
+func TestCleanupClusterResourcesWaitsForFeastOperatorRelease(t *testing.T) {
+	g := NewWithT(t)
+
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(componentApi.AddToScheme(scheme))
+	utilruntime.Must(rbacv1.AddToScheme(scheme))
+
+	feast := newTestFeastOperator()
+	// Healthy ConfigMap claimed by both operators; the feast operator
+	// finalizer signals it still owns resources requiring cleanup.
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      capabilitiesConfigMapName,
+			Namespace: "test-ns",
+			Finalizers: []string{
+				CapabilitiesConfigMapFinalizer,
+				feastOperatorCapabilitiesFinalizer,
+			},
+		},
+		Data: map[string]string{
+			capabilitiesKeyFeatureStoreEnabled: "true",
+			capabilitiesKeyDataRegistryEnabled: "true",
+		},
+	}
+	crb := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "feast-crb",
+			Labels: map[string]string{
+				labels.ODH.Component(componentName): labels.True,
+			},
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(feast, cm, crb).Build()
+
+	m := &Module{
+		cfg: &moduleconfig.Config{
+			ApplicationsNamespace: "test-ns",
+			FeatureStoreEnabled:   false,
+			DataRegistryEnabled:   false,
+		},
+	}
+
+	rr := &odhtypes.ReconciliationRequest{
+		Instance: feast,
+		Client:   cl,
+	}
+
+	// First finalizer run: teardown intent is written, the ConfigMap is
+	// deleted (module finalizer kept), and the run defers with an error
+	// while the feast operator still holds its finalizer.
+	err := m.cleanupClusterResources(context.Background(), rr)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("waiting for feast operator"))
+
+	stored := &corev1.ConfigMap{}
+	g.Expect(cl.Get(context.Background(), client.ObjectKeyFromObject(cm), stored)).To(Succeed())
+	g.Expect(stored.DeletionTimestamp).NotTo(BeNil())
+	g.Expect(stored.Data[capabilitiesKeyFeatureStoreEnabled]).To(Equal("false"))
+	g.Expect(stored.Data[capabilitiesKeyDataRegistryEnabled]).To(Equal("false"))
+	g.Expect(stored.Finalizers).To(ContainElement(CapabilitiesConfigMapFinalizer))
+	// The ClusterRoleBinding must still exist: cleanup has not completed.
+	crbList := &rbacv1.ClusterRoleBindingList{}
+	g.Expect(cl.List(context.Background(), crbList)).To(Succeed())
+	g.Expect(crbList.Items).To(HaveLen(1))
+
+	// Simulate the feast operator finishing its cleanup: it removes its
+	// finalizer from the Terminating ConfigMap.
+	controllerutil.RemoveFinalizer(stored, feastOperatorCapabilitiesFinalizer)
+	g.Expect(cl.Update(context.Background(), stored)).To(Succeed())
+
+	// Second finalizer run: the feast operator release is observed, the
+	// module finalizer is removed, and the uninstall completes.
+	g.Expect(m.cleanupClusterResources(context.Background(), rr)).To(Succeed())
+
+	getErr := cl.Get(context.Background(), client.ObjectKeyFromObject(cm), &corev1.ConfigMap{})
+	g.Expect(k8serr.IsNotFound(getErr)).To(BeTrue())
+	crbList = &rbacv1.ClusterRoleBindingList{}
+	g.Expect(cl.List(context.Background(), crbList)).To(Succeed())
+	g.Expect(crbList.Items).To(BeEmpty())
+}
+
+func TestCleanupClusterResourcesDisablesAlreadyTerminatingConfigMap(t *testing.T) {
+	g := NewWithT(t)
+
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(componentApi.AddToScheme(scheme))
+	utilruntime.Must(rbacv1.AddToScheme(scheme))
+
+	feast := newTestFeastOperator()
+	// Deletion started long before this finalizer. The flags are still enabled,
+	// so the wait must be measured from the cleanup-start annotation rather
+	// than this old deletionTimestamp.
+	stale := metav1.Time{Time: metav1.Now().Add(-2 * feastOperatorReleaseTimeout)}
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      capabilitiesConfigMapName,
+			Namespace: "test-ns",
+			Finalizers: []string{
+				CapabilitiesConfigMapFinalizer,
+				feastOperatorCapabilitiesFinalizer,
+			},
+			DeletionTimestamp: &stale,
+		},
+		Data: map[string]string{
+			capabilitiesKeyFeatureStoreEnabled: "true",
+			capabilitiesKeyDataRegistryEnabled: "true",
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(feast, cm).Build()
+
+	m := &Module{
+		cfg: &moduleconfig.Config{
+			ApplicationsNamespace: "test-ns",
+			FeatureStoreEnabled:   false,
+			DataRegistryEnabled:   false,
+		},
+	}
+	rr := &odhtypes.ReconciliationRequest{
+		Instance: feast,
+		Client:   cl,
+	}
+
+	err := m.cleanupClusterResources(context.Background(), rr)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("waiting for feast operator"))
+
+	stored := &corev1.ConfigMap{}
+	g.Expect(cl.Get(context.Background(), client.ObjectKeyFromObject(cm), stored)).To(Succeed())
+	g.Expect(stored.Data[capabilitiesKeyFeatureStoreEnabled]).To(Equal("false"))
+	g.Expect(stored.Data[capabilitiesKeyDataRegistryEnabled]).To(Equal("false"))
+	started, parseErr := time.Parse(time.RFC3339, stored.Annotations[capabilitiesCleanupStartedAnnotation])
+	g.Expect(parseErr).NotTo(HaveOccurred())
+	g.Expect(time.Since(started)).To(BeNumerically("<", time.Minute))
+	g.Expect(stored.Finalizers).To(ConsistOf(
+		CapabilitiesConfigMapFinalizer,
+		feastOperatorCapabilitiesFinalizer,
+	))
+
+	// A retry while the flags are already disabled must not write the ConfigMap again.
+	snapshot := stored.DeepCopy()
+	err = m.cleanupClusterResources(context.Background(), rr)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("waiting for feast operator"))
+	g.Expect(cl.Get(context.Background(), client.ObjectKeyFromObject(cm), stored)).To(Succeed())
+	g.Expect(stored).To(Equal(snapshot))
+}
+
+func TestCleanupClusterResourcesTimesOutWaitingForFeastOperator(t *testing.T) {
+	g := NewWithT(t)
+
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(componentApi.AddToScheme(scheme))
+	utilruntime.Must(rbacv1.AddToScheme(scheme))
+
+	feast := newTestFeastOperator()
+	// Cleanup was recorded longer ago than the release timeout, and the feast
+	// operator finalizer is still held. The deletionTimestamp is older still;
+	// the timeout is the cleanup-start annotation.
+	stale := metav1.Time{Time: metav1.Now().Add(-2 * feastOperatorReleaseTimeout)}
+	startedAt := stale.UTC().Format(time.RFC3339)
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      capabilitiesConfigMapName,
+			Namespace: "test-ns",
+			Finalizers: []string{
+				CapabilitiesConfigMapFinalizer,
+				feastOperatorCapabilitiesFinalizer,
+			},
+			Annotations: map[string]string{
+				capabilitiesCleanupStartedAnnotation: startedAt,
+			},
+			DeletionTimestamp: &stale,
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(feast, cm).Build()
+
+	recorder := events.NewFakeRecorder(1)
+	m := &Module{
+		cfg: &moduleconfig.Config{
+			ApplicationsNamespace: "test-ns",
+			FeatureStoreEnabled:   false,
+			DataRegistryEnabled:   false,
+		},
+		recorder: recorder,
+	}
+
+	rr := &odhtypes.ReconciliationRequest{
+		Instance: feast,
+		Client:   cl,
+	}
+
+	// The timeout lets the uninstall proceed even though the feast operator
+	// never released the ConfigMap.
+	g.Expect(m.cleanupClusterResources(context.Background(), rr)).To(Succeed())
+
+	// The ConfigMap is left Terminating, held only by the stuck feast
+	// operator finalizer; the module finalizer is gone. Teardown intent is
+	// still written so a late feast-operator reconcile can observe it.
+	stored := &corev1.ConfigMap{}
+	g.Expect(cl.Get(context.Background(), client.ObjectKeyFromObject(cm), stored)).To(Succeed())
+	g.Expect(stored.Finalizers).To(ConsistOf(feastOperatorCapabilitiesFinalizer))
+	g.Expect(stored.Data[capabilitiesKeyFeatureStoreEnabled]).To(Equal("false"))
+	g.Expect(stored.Data[capabilitiesKeyDataRegistryEnabled]).To(Equal("false"))
+	g.Expect(recorder.Events).To(Receive(And(
+		ContainSubstring("Warning "+capabilitiesCleanupTimeoutReason),
+		ContainSubstring(capabilitiesConfigMapName),
+		ContainSubstring("test-ns"),
+		ContainSubstring(feastOperatorCapabilitiesFinalizer),
+		ContainSubstring(startedAt),
+		ContainSubstring("remove only this finalizer"),
+		Not(ContainSubstring("finalizers")),
+	)))
 }
 
 func TestParseAndValidateOIDCIssuerURL(t *testing.T) {

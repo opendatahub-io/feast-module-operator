@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/client-go/tools/events"
+
 	"github.com/opendatahub-io/opendatahub-operator/v2/api/common"
 	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/cluster"
 	odhtypes "github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/types"
@@ -47,6 +49,8 @@ var imageParamMap = map[string]string{
 type Module struct {
 	cfg          *moduleconfig.Config
 	manifestInfo odhtypes.ManifestInfo
+	// recorder reports Kubernetes events on the FeastOperator. Nil skips emission.
+	recorder events.EventRecorder
 }
 
 // OverlayFor returns the manifests overlay selected for the given platform

@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -51,6 +52,27 @@ const (
 // CapabilitiesConfigMapFinalizer prevents deletion until the controller can
 // release the ConfigMap and recreate it through normal reconciliation.
 const CapabilitiesConfigMapFinalizer = "components.platform.opendatahub.io/feast-capabilities"
+
+// feastOperatorCapabilitiesFinalizer is added by the feast operator to the
+// capabilities ConfigMap. Its absence on a Terminating ConfigMap signals that
+// the feast operator finished cleaning up its resources (Data Registry
+// teardown) and the feast operator deployment can be removed. This is part of
+// the cross-repo contract with the feast operator.
+const feastOperatorCapabilitiesFinalizer = "feast.dev/capabilities-config-cleanup"
+
+// feastOperatorReleaseTimeout bounds how long the module finalizer waits for
+// the feast operator to remove its ConfigMap finalizer before proceeding
+// with uninstall anyway, leaving the Terminating ConfigMap to manual cleanup.
+const feastOperatorReleaseTimeout = 5 * time.Minute
+
+// capabilitiesCleanupStartedAnnotation is the RFC3339 time at which teardown
+// intent was first written. The uninstall wait is measured from this instant,
+// not from the ConfigMap deletionTimestamp.
+const capabilitiesCleanupStartedAnnotation = "components.platform.opendatahub.io/capabilities-cleanup-started-at"
+
+// capabilitiesCleanupTimeoutReason is the Warning event emitted when uninstall
+// continues while feast.dev/capabilities-config-cleanup still holds the ConfigMap.
+const capabilitiesCleanupTimeoutReason = "CapabilitiesCleanupTimeout"
 
 func boolString(value bool) string {
 	return strconv.FormatBool(value)
@@ -217,4 +239,151 @@ func capabilitiesDataHash(data map[string]string) string {
 		h.Write([]byte("\n"))
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// getCapabilitiesConfigMap reads the capabilities ConfigMap. Not-found is not
+// an error; callers treat a missing ConfigMap as nothing to hand over.
+func (m *Module) getCapabilitiesConfigMap(ctx context.Context, rr *odhtypes.ReconciliationRequest) (*corev1.ConfigMap, error) {
+	cm := &corev1.ConfigMap{}
+	if err := rr.Client.Get(ctx, client.ObjectKey{
+		Name:      capabilitiesConfigMapName,
+		Namespace: m.cfg.ApplicationsNamespace,
+	}, cm); err != nil {
+		if k8serr.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get capabilities ConfigMap %s: %w", capabilitiesConfigMapName, err)
+	}
+	return cm, nil
+}
+
+// markCapabilitiesDisabled writes both capability flags as disabled into the
+// capabilities ConfigMap, including one that is already terminating. The feast
+// operator treats dataRegistryEnabled=false on a Terminating ConfigMap as
+// teardown intent. The same update records capabilitiesCleanupStartedAnnotation
+// once. The write is skipped when both flags are already disabled and that
+// annotation is set.
+func (m *Module) markCapabilitiesDisabled(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+	cm, err := m.getCapabilitiesConfigMap(ctx, rr)
+	if err != nil || cm == nil {
+		return err
+	}
+	startedAt := ""
+	if cm.Annotations != nil {
+		startedAt = cm.Annotations[capabilitiesCleanupStartedAnnotation]
+	}
+	disabled := boolString(false)
+	flagsDisabled := cm.Data[capabilitiesKeyFeatureStoreEnabled] == disabled &&
+		cm.Data[capabilitiesKeyDataRegistryEnabled] == disabled
+	if flagsDisabled && startedAt != "" {
+		return nil
+	}
+	if cm.Data == nil {
+		cm.Data = map[string]string{}
+	}
+	if cm.Annotations == nil {
+		cm.Annotations = map[string]string{}
+	}
+	cm.Data[capabilitiesKeyFeatureStoreEnabled] = disabled
+	cm.Data[capabilitiesKeyDataRegistryEnabled] = disabled
+	if startedAt == "" {
+		cm.Annotations[capabilitiesCleanupStartedAnnotation] = time.Now().UTC().Format(time.RFC3339)
+	}
+	if err := rr.Client.Update(ctx, cm); err != nil {
+		return fmt.Errorf("failed to write teardown intent into capabilities ConfigMap %s: %w", capabilitiesConfigMapName, err)
+	}
+	return nil
+}
+
+// deleteCapabilitiesConfigMap issues the ConfigMap delete without removing
+// the module finalizer. The ConfigMap stays in Terminating, held by the
+// module and feast operator finalizers, until both have completed cleanup.
+func (m *Module) deleteCapabilitiesConfigMap(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+	cm, err := m.getCapabilitiesConfigMap(ctx, rr)
+	if err != nil || cm == nil {
+		return err
+	}
+	if cm.DeletionTimestamp != nil {
+		return nil // already deleting (finalizer re-run)
+	}
+	if err := rr.Client.Delete(ctx, cm); client.IgnoreNotFound(err) != nil {
+		return fmt.Errorf("failed to delete capabilities ConfigMap %s: %w", capabilitiesConfigMapName, err)
+	}
+	return nil
+}
+
+// waitForFeastOperatorRelease blocks finalization — by returning an error the
+// reconciler requeues and re-runs the finalizer — until the feast operator
+// has removed its finalizer from the Terminating capabilities ConfigMap,
+// signalling that its Data Registry cleanup finished. deletionTimestamp only
+// confirms deletion has started. The wait is bounded by
+// capabilitiesCleanupStartedAnnotation: after feastOperatorReleaseTimeout the
+// module emits a Warning event and proceeds without the feast operator,
+// leaving manual cleanup of the stuck Terminating ConfigMap as the recovery path.
+func (m *Module) waitForFeastOperatorRelease(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+	log := logf.FromContext(ctx)
+
+	cm, err := m.getCapabilitiesConfigMap(ctx, rr)
+	if err != nil || cm == nil {
+		return err // gone: nothing to wait for
+	}
+
+	if !controllerutil.ContainsFinalizer(cm, feastOperatorCapabilitiesFinalizer) {
+		// The feast operator never claimed the ConfigMap (older version) or
+		// has already released it after cleaning up.
+		return nil
+	}
+
+	if cm.DeletionTimestamp == nil {
+		return fmt.Errorf("capabilities ConfigMap %s is not terminating yet", capabilitiesConfigMapName)
+	}
+
+	startedAt := ""
+	if cm.Annotations != nil {
+		startedAt = cm.Annotations[capabilitiesCleanupStartedAnnotation]
+	}
+	started, err := time.Parse(time.RFC3339, startedAt)
+	if err != nil {
+		return fmt.Errorf("capabilities ConfigMap %s cleanup start time is missing or invalid", capabilitiesConfigMapName)
+	}
+	heldSince := started.UTC().Format(time.RFC3339)
+	if time.Since(started) < feastOperatorReleaseTimeout {
+		return fmt.Errorf(
+			"waiting for feast operator to release capabilities ConfigMap %s (finalizer %s held since %s)",
+			capabilitiesConfigMapName, feastOperatorCapabilitiesFinalizer, heldSince,
+		)
+	}
+
+	log.Info("Timed out waiting for feast operator to release capabilities ConfigMap; proceeding with uninstall",
+		"configmap", capabilitiesConfigMapName,
+		"namespace", m.cfg.ApplicationsNamespace,
+		"finalizer", feastOperatorCapabilitiesFinalizer,
+		"heldSince", heldSince,
+	)
+	if m.recorder != nil {
+		m.recorder.Eventf(rr.Instance, nil, corev1.EventTypeWarning, capabilitiesCleanupTimeoutReason, "Uninstall",
+			"Timed out waiting for finalizer %s on ConfigMap %s/%s (held since %s); uninstall continuing. For manual cleanup, remove only this finalizer and preserve any others.",
+			feastOperatorCapabilitiesFinalizer,
+			m.cfg.ApplicationsNamespace, capabilitiesConfigMapName, heldSince,
+		)
+	}
+	return nil
+}
+
+// releaseCapabilitiesConfigMap removes the module finalizer from the
+// Terminating capabilities ConfigMap, allowing the API server to complete
+// the deletion once the feast operator finalizer is gone too.
+func (m *Module) releaseCapabilitiesConfigMap(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+	cm, err := m.getCapabilitiesConfigMap(ctx, rr)
+	if err != nil || cm == nil {
+		return err
+	}
+	if !controllerutil.ContainsFinalizer(cm, CapabilitiesConfigMapFinalizer) {
+		return nil
+	}
+	controllerutil.RemoveFinalizer(cm, CapabilitiesConfigMapFinalizer)
+	if err := rr.Client.Update(ctx, cm); err != nil {
+		return fmt.Errorf("failed to remove finalizer from capabilities ConfigMap %s: %w", capabilitiesConfigMapName, err)
+	}
+	return nil
 }

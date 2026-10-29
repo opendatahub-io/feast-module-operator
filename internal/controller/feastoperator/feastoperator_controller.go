@@ -26,10 +26,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	k8serr "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -97,6 +95,7 @@ func NewReconciler(
 	if err != nil {
 		return err
 	}
+	m.recorder = mgr.GetEventRecorder(componentName)
 
 	r, err := reconciler.ReconcilerFor(mgr, &componentApi.FeastOperator{}).
 		Owns(&corev1.ConfigMap{}, reconciler.WithPredicates(capabilitiesConfigMapWatchPredicate())).
@@ -212,22 +211,30 @@ func (m *Module) cleanupClusterResources(ctx context.Context, rr *odhtypes.Recon
 		return err
 	}
 
-	cm := &corev1.ConfigMap{}
-	err := rr.Client.Get(ctx, client.ObjectKey{
-		Name:      capabilitiesConfigMapName,
-		Namespace: m.cfg.ApplicationsNamespace,
-	}, cm)
-	if err == nil {
-		if controllerutil.RemoveFinalizer(cm, CapabilitiesConfigMapFinalizer) {
-			if err := rr.Client.Update(ctx, cm); err != nil {
-				return fmt.Errorf("failed to remove finalizer from capabilities ConfigMap %s: %w", capabilitiesConfigMapName, err)
-			}
-		}
-		if err := rr.Client.Delete(ctx, cm); client.IgnoreNotFound(err) != nil {
-			return fmt.Errorf("failed to delete capabilities ConfigMap %s: %w", capabilitiesConfigMapName, err)
-		}
-	} else if !k8serr.IsNotFound(err) {
-		return fmt.Errorf("failed to get capabilities ConfigMap %s: %w", capabilitiesConfigMapName, err)
+	// ConfigMap finalizer handshake: teardown intent (both capabilities
+	// disabled) is written into the ConfigMap, the feast operator deployment
+	// is rolled so it observes the change, and the delete is issued while
+	// this module keeps its own finalizer. The feast operator tears down its
+	// Data Registry workload and removes its finalizer
+	// (feast.dev/capabilities-config-cleanup); only then is the module
+	// finalizer released, guaranteeing the ConfigMap outlives the feast
+	// operator cleanup. A bounded timeout keeps the uninstall from deadlocking
+	// when the feast operator is unavailable. Each step is idempotent so a
+	// re-run after a mid-finalizer crash converges.
+	if err := m.markCapabilitiesDisabled(ctx, rr); err != nil {
+		return err
+	}
+	if err := m.triggerCapabilityRolloutIfNeeded(ctx, rr); err != nil {
+		return err
+	}
+	if err := m.deleteCapabilitiesConfigMap(ctx, rr); err != nil {
+		return err
+	}
+	if err := m.waitForFeastOperatorRelease(ctx, rr); err != nil {
+		return err
+	}
+	if err := m.releaseCapabilitiesConfigMap(ctx, rr); err != nil {
+		return err
 	}
 
 	crbList := &rbacv1.ClusterRoleBindingList{}
