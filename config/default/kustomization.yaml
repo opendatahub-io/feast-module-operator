@@ -4,6 +4,7 @@ resources:
 - ../crd
 - ../rbac
 - ../manager
+- ../network-policy
 - metrics_service.yaml
 
 patches:
