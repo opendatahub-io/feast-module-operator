@@ -44,7 +44,7 @@ case "${platform_type}" in
     rhoai | managed-rhoai)
         echo "Downloading manifests for RHOAI"
         REPO_URL="https://github.com/red-hat-data-services/feast"
-        COMMIT_SHA="95d67f02ffbc9c722482a148cf2b7fbe4aa51766"
+        COMMIT_SHA="85ad2a2ee7f2e74469ff6fbeb1138bfede4110a1"
         ;;
     *)
         echo "invalid ODH_PLATFORM_TYPE '${platform_type}' (expected odh, OpenDataHub, rhoai, or managed-rhoai)" >&2
