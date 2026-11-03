@@ -19,16 +19,38 @@ import (
 	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
 
 	componentsv1alpha1 "github.com/opendatahub-io/feast-module-operator/api/components/v1alpha1"
-	feastoperatorcontroller "github.com/opendatahub-io/feast-module-operator/internal/controller/feastoperator"
-	moduleconfig "github.com/opendatahub-io/feast-module-operator/pkg/config"
 	"github.com/opendatahub-io/feast-module-operator/test/support"
 	"github.com/opendatahub-io/opendatahub-operator/v2/api/common"
 )
 
-// e2ePlatformVersion is the platform version published through the platform
-// config ConfigMap to emulate the ODH platform operator in the release status
-// handshake.
-const e2ePlatformVersion = "2.22.0"
+// Keep e2e free of internal/controller and pkg/config imports. Those packages
+// pull helm/kustomize/controller stacks and dominate cold CI compile time;
+// this suite only needs the well-known string values for RHOAI verification.
+const (
+	e2ePlatformVersion = "2.22.0"
+
+	platformConfigCMName = "odh-data-config"
+	platformVersionKey   = "platformVersion"
+	defaultPlatformType  = "unknown"
+
+	overlayODH   = "overlays/odh"
+	overlayRhoai = "overlays/rhoai"
+
+	// Mirror opendatahub-operator/v2/pkg/cluster platform display names.
+	platformManagedRhoai     = "OpenShift AI Cloud Service"
+	platformSelfManagedRhoai = "OpenShift AI Self-Managed"
+)
+
+// overlayFor selects the manifests overlay for a platform type without
+// importing the controller package (same rules as OverlayFor there).
+func overlayFor(platformType string) string {
+	switch platformType {
+	case platformSelfManagedRhoai, platformManagedRhoai:
+		return overlayRhoai
+	default:
+		return overlayODH
+	}
+}
 
 type foundationTests struct {
 	*feastE2ETest
@@ -53,7 +75,7 @@ func newFoundationTests(suite *feastE2ETest) *foundationTests {
 		},
 		operatorCfgMap: &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      feastoperatorcontroller.PlatformConfigCMName,
+				Name:      platformConfigCMName,
 				Namespace: suite.operatorNamespace,
 			},
 		},
@@ -105,8 +127,8 @@ func (ft *foundationTests) testOperatorConfigMap(t *testing.T) {
 	// unset. On a live OpenShift AI cluster the Platform already owns the
 	// ConfigMap and publishes the key; that value is platform-managed.
 	g.Eventually(k.Get(ft.operatorCfgMap)).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(And(
-		jq.Match(`.metadata.name == "%s"`, feastoperatorcontroller.PlatformConfigCMName),
-		jq.Match(`(.data."%s" == null) or ((.metadata.ownerReferences // []) | map(select(.kind == "Platform")) | length > 0)`, moduleconfig.KeyPlatformVersion),
+		jq.Match(`.metadata.name == "%s"`, platformConfigCMName),
+		jq.Match(`(.data."%s" == null) or ((.metadata.ownerReferences // []) | map(select(.kind == "Platform")) | length > 0)`, platformVersionKey),
 	))
 }
 
@@ -123,7 +145,7 @@ func (ft *foundationTests) testPlatformManifests(t *testing.T) {
 
 	platformType := envVarValue(deploy, platformTypeEnvVar)
 	if platformType == "" {
-		platformType = moduleconfig.DefaultPlatformType
+		platformType = defaultPlatformType
 	}
 
 	// The release recorded on the workload matches the injected platform type.
@@ -134,7 +156,7 @@ func (ft *foundationTests) testPlatformManifests(t *testing.T) {
 	// RELATED_IMAGE_CRON_JOB is not part of the operator's image param map,
 	// so the value on the deployed workload is exactly the one bundled in
 	// the selected overlay's params.env.
-	expected := support.OverlayParam(t, feastoperatorcontroller.OverlayFor(platformType), "RELATED_IMAGE_CRON_JOB")
+	expected := support.OverlayParam(t, overlayFor(platformType), "RELATED_IMAGE_CRON_JOB")
 
 	g.Eventually(k.Get(ft.workloadDeploy)).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(
 		jq.Match(`.spec.template.spec.containers[] | select(.name == "manager") | .env[] | select(.name == "RELATED_IMAGE_CRON_JOB") | .value == "%s"`, expected),
@@ -207,7 +229,7 @@ func (ft *foundationTests) testReleaseStatus(t *testing.T) {
 
 	platformCM := &corev1.ConfigMap{}
 	g.Expect(k8sClient.Get(ctx, client.ObjectKey{
-		Name:      feastoperatorcontroller.PlatformConfigCMName,
+		Name:      platformConfigCMName,
 		Namespace: ft.operatorNamespace,
 	}, platformCM)).To(Succeed())
 
@@ -217,13 +239,13 @@ func (ft *foundationTests) testReleaseStatus(t *testing.T) {
 	// platform handshake with a fixed version.
 	expectedVersion := e2ePlatformVersion
 	if configMapOwnedByPlatform(platformCM) {
-		expectedVersion = platformCM.Data[feastoperatorcontroller.PlatformVersionKey]
+		expectedVersion = platformCM.Data[platformVersionKey]
 		g.Expect(expectedVersion).NotTo(BeEmpty(), "platform-owned ConfigMap should publish platformVersion")
 	} else {
 		if platformCM.Data == nil {
 			platformCM.Data = map[string]string{}
 		}
-		platformCM.Data[feastoperatorcontroller.PlatformVersionKey] = e2ePlatformVersion
+		platformCM.Data[platformVersionKey] = e2ePlatformVersion
 		g.Expect(k8sClient.Update(ctx, platformCM)).To(Succeed())
 	}
 
