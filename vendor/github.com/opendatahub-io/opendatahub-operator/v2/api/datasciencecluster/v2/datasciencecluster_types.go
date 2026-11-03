@@ -1,0 +1,262 @@
+/*
+Copyright 2025.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v2
+
+import (
+	"reflect"
+	"sort"
+	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/opendatahub-io/opendatahub-operator/v2/api/common"
+	componentApi "github.com/opendatahub-io/opendatahub-operator/v2/api/components/v1alpha1"
+)
+
+// DataScienceClusterSpec defines the desired state of the cluster.
+type DataScienceClusterSpec struct {
+	// Override and fine tune specific component configurations.
+	Components Components `json:"components,omitempty"`
+}
+
+// TrainingOperator and LlamaStackOperator retirement is enforced by the DSC v2 validating webhook.
+type Components struct {
+	// Dashboard component configuration.
+	Dashboard componentApi.DSCDashboardV2 `json:"dashboard,omitempty"`
+
+	// Workbenches component configuration.
+	Workbenches componentApi.DSCWorkbenches `json:"workbenches,omitempty"`
+
+	// AIPipelines component configuration.
+	AIPipelines componentApi.DSCDataSciencePipelines `json:"aipipelines,omitempty"`
+
+	// Kserve component configuration.
+	// Only RawDeployment mode is supported.
+	Kserve componentApi.DSCKserveV2 `json:"kserve,omitempty"`
+
+	// Kueue component configuration.
+	Kueue componentApi.DSCKueue `json:"kueue,omitempty"`
+
+	// Ray component configuration.
+	Ray componentApi.DSCRay `json:"ray,omitempty"`
+
+	// TrustyAI component configuration.
+	TrustyAI componentApi.DSCTrustyAI `json:"trustyai,omitempty"`
+
+	// ModelRegistry component configuration.
+	ModelRegistry componentApi.DSCModelRegistry `json:"modelregistry,omitempty"`
+
+	// Training Operator component configuration.
+	// Deprecated: Training Operator v1 is obsolete in RHOAI 3.6. Use Trainer v2 instead.
+	// This field is kept for backward compatibility only.
+	TrainingOperator componentApi.DSCTrainingOperator `json:"trainingoperator,omitempty"`
+
+	// Feast Operator component configuration.
+	FeastOperator componentApi.DSCFeastOperator `json:"feastoperator,omitempty"`
+
+	// LlamaStack Operator component configuration.
+	// Deprecated: Use OGX instead. This field is kept for backward compatibility only.
+	LlamaStackOperator componentApi.DSCLlamaStackOperator `json:"llamastackoperator,omitempty"`
+
+	// OGX component configuration.
+	OGX componentApi.DSCOGX `json:"ogx,omitempty"`
+
+	// MLflow Operator component configuration.
+	MLflowOperator componentApi.DSCMLflowOperator `json:"mlflowoperator,omitempty"`
+
+	// Trainer component configuration.
+	Trainer componentApi.DSCTrainer `json:"trainer,omitempty"`
+
+	// SparkOperator component configuration.
+	SparkOperator componentApi.DSCSparkOperator `json:"sparkoperator,omitempty"`
+
+	// AIGateway component configuration.
+	AIGateway componentApi.DSCAIGateway `json:"aigateway,omitempty"`
+
+	// MCPLifecycleOperator component configuration.
+	MCPLifecycleOperator componentApi.DSCMCPLifecycleOperator `json:"mcplifecycleoperator,omitempty"`
+
+	// DatabaseService module configuration.
+	DatabaseService componentApi.DSCDatabaseService `json:"databaseservice,omitempty"`
+}
+
+// componentJSONName returns the DSC component key from a struct field json tag.
+func componentJSONName(field reflect.StructField) (string, bool) {
+	tag := field.Tag.Get("json")
+	if tag == "" || tag == "-" {
+		return "", false
+	}
+	name, _, _ := strings.Cut(tag, ",")
+	if name == "" {
+		return "", false
+	}
+	return name, true
+}
+
+// ComponentNames returns spec.components keys declared on the DSC, derived
+// from Components struct json tags.
+func (Components) ComponentNames() []string {
+	t := reflect.TypeOf(Components{})
+	names := make([]string, 0, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		if name, ok := componentJSONName(t.Field(i)); ok {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ComponentsStatus defines the custom status of DataScienceCluster components.
+type ComponentsStatus struct {
+	// Dashboard component status.
+	Dashboard componentApi.DSCDashboardStatus `json:"dashboard,omitempty"`
+
+	// MaaSConsumerPortal submodule status (submodule of Dashboard).
+	MaaSConsumerPortal componentApi.DSCMaaSConsumerPortalStatus `json:"maasConsumerPortal,omitempty"`
+
+	// Workbenches component status.
+	Workbenches componentApi.DSCWorkbenchesStatus `json:"workbenches,omitempty"`
+
+	// WorkbenchesV2 submodule status (submodule of Workbenches).
+	WorkbenchesV2 componentApi.DSCWorkbenchesV2Status `json:"workbenchesV2,omitempty"`
+
+	// AIPipelines component status.
+	AIPipelines componentApi.DSCDataSciencePipelinesStatus `json:"aipipelines,omitempty"`
+
+	// Kserve component status.
+	Kserve componentApi.DSCKserveStatus `json:"kserve,omitempty"`
+
+	// Kueue component status.
+	Kueue componentApi.DSCKueueStatus `json:"kueue,omitempty"`
+
+	// Ray component status.
+	Ray componentApi.DSCRayStatus `json:"ray,omitempty"`
+
+	// TrustyAI component status.
+	TrustyAI componentApi.DSCTrustyAIStatus `json:"trustyai,omitempty"`
+
+	// ModelRegistry component status.
+	ModelRegistry componentApi.DSCModelRegistryStatus `json:"modelregistry,omitempty"`
+
+	// Training Operator component status.
+	// Deprecated: Training Operator v1 is obsolete in RHOAI 3.6. Use Trainer v2 instead.
+	TrainingOperator componentApi.DSCTrainingOperatorStatus `json:"trainingoperator,omitempty"`
+
+	// Feast Operator component status.
+	FeastOperator componentApi.DSCFeastOperatorStatus `json:"feastoperator,omitempty"`
+
+	// LlamaStack Operator component status.
+	// Deprecated: Use OGX instead. This field is kept for backward compatibility only.
+	LlamaStackOperator componentApi.DSCLlamaStackOperatorStatus `json:"llamastackoperator,omitempty"`
+
+	// OGX component status.
+	OGX componentApi.DSCOGXStatus `json:"ogx,omitempty"`
+
+	// MLflow Operator component status.
+	MLflowOperator componentApi.DSCMLflowOperatorStatus `json:"mlflowoperator,omitempty"`
+
+	// Trainer component status.
+	Trainer componentApi.DSCTrainerStatus `json:"trainer,omitempty"`
+
+	// SparkOperator component status.
+	SparkOperator componentApi.DSCSparkOperatorStatus `json:"sparkoperator,omitempty"`
+
+	// AIGateway component status.
+	AIGateway componentApi.DSCAIGatewayStatus `json:"aigateway,omitempty"`
+
+	// ModelsAsAService submodule status (submodule of AIGateway).
+	ModelsAsAService componentApi.DSCModelsAsServiceStatus `json:"modelsAsAService,omitempty"`
+
+	// BatchGateway submodule status (submodule of AIGateway).
+	BatchGateway componentApi.DSCBatchGatewayStatus `json:"batchGateway,omitempty"`
+
+	// MCPLifecycleOperator component status.
+	MCPLifecycleOperator componentApi.DSCMCPLifecycleOperatorStatus `json:"mcplifecycleoperator,omitempty"`
+
+	// DatabaseService module status.
+	// Field name must match GVK.Kind so WriteDSCComponentStatus can find it.
+	DatabaseService componentApi.DSCDatabaseServiceStatus `json:"databaseservice,omitempty"`
+}
+
+// DataScienceClusterStatus defines the observed state of DataScienceCluster.
+type DataScienceClusterStatus struct {
+	common.Status `json:",inline"`
+
+	// RelatedObjects is a list of objects created and maintained by this operator.
+	// Object references will be added to this list after they have been created AND found in the cluster.
+	// +optional
+	RelatedObjects []corev1.ObjectReference `json:"relatedObjects,omitempty"`
+	ErrorMessage   string                   `json:"errorMessage,omitempty"`
+
+	// Expose component's specific status
+	// +optional
+	Components ComponentsStatus `json:"components"`
+
+	// Version and release type
+	Release common.Release `json:"release,omitempty"`
+}
+
+func (s *DataScienceClusterStatus) GetConditions() []common.Condition {
+	return s.Conditions
+}
+
+func (s *DataScienceClusterStatus) SetConditions(conditions []common.Condition) {
+	s.Conditions = append(conditions[:0:0], conditions...)
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:deprecatedversion:warning="datasciencecluster.opendatahub.io/v2 DataScienceCluster is deprecated; use datasciencecluster.opendatahub.io/v3 DataScienceCluster"
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster,shortName=dsc
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`,description="Ready"
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`,description="Reason"
+
+// DataScienceCluster is the Schema for the datascienceclusters API.
+type DataScienceCluster struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   DataScienceClusterSpec   `json:"spec,omitempty"`
+	Status DataScienceClusterStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+// DataScienceClusterList contains a list of DataScienceCluster.
+type DataScienceClusterList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []DataScienceCluster `json:"items"`
+}
+
+func (c *DataScienceCluster) GetConditions() []common.Condition {
+	return c.Status.GetConditions()
+}
+
+func (c *DataScienceCluster) GetStatus() *common.Status {
+	return &c.Status.Status
+}
+
+func (c *DataScienceCluster) SetConditions(conditions []common.Condition) {
+	c.Status.SetConditions(conditions)
+}
+
+func init() {
+	SchemeBuilder.Register(&DataScienceCluster{}, &DataScienceClusterList{})
+}

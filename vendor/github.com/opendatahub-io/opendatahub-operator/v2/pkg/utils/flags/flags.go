@@ -1,0 +1,167 @@
+package flags
+
+import (
+	"flag"
+	"strings"
+
+	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
+)
+
+func AddOperatorFlagsAndEnvvars(envvarPrefix string) error {
+	pflag.String("metrics-bind-address", ":8443", "The address the metric endpoint binds to.")
+	if err := viper.BindEnv("metrics-bind-address", envvarPrefix+"_METRICS_BIND_ADDRESS"); err != nil {
+		return err
+	}
+	pflag.String("health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	if err := viper.BindEnv("health-probe-bind-address", envvarPrefix+"_HEALTH_PROBE_BIND_ADDRESS"); err != nil {
+		return err
+	}
+	pflag.Bool("leader-elect", false,
+		"Enable leader election for controller manager. "+
+			"Enabling this will ensure there is only one active controller manager.")
+	if err := viper.BindEnv("leader-elect", envvarPrefix+"_LEADER_ELECT"); err != nil {
+		return err
+	}
+	pflag.String("log-mode", "", "Log mode ('', prod, devel), default to ''")
+	if err := viper.BindEnv("log-mode", envvarPrefix+"_LOG_MODE"); err != nil {
+		return err
+	}
+	pflag.String("pprof-bind-address", "", "The address that pprof binds to. ")
+	if err := viper.BindEnv("pprof-bind-address", envvarPrefix+"_PPROF_BIND_ADDRESS", "PPROF_BIND_ADDRESS"); err != nil {
+		return err
+	}
+	pflag.Bool("metrics-secure", true, "Serve metrics via HTTPS. Use --metrics-secure=false for HTTP.")
+	if err := viper.BindEnv("metrics-secure", envvarPrefix+"_METRICS_SECURE"); err != nil {
+		return err
+	}
+	pflag.String("metrics-cert-path", "", "Directory containing the metrics server TLS cert and key. "+
+		"If not set, controller-runtime generates self-signed certificates.")
+	if err := viper.BindEnv("metrics-cert-path", envvarPrefix+"_METRICS_CERT_PATH"); err != nil {
+		return err
+	}
+	pflag.String("metrics-cert-name", "tls.crt", "Metrics server certificate filename.")
+	if err := viper.BindEnv("metrics-cert-name", envvarPrefix+"_METRICS_CERT_NAME"); err != nil {
+		return err
+	}
+	pflag.String("metrics-cert-key", "tls.key", "Metrics server key filename.")
+	if err := viper.BindEnv("metrics-cert-key", envvarPrefix+"_METRICS_CERT_KEY"); err != nil {
+		return err
+	}
+
+	// RHAI-specific config: uses RHAI_ prefix (not ODH_MANAGER_) to separate
+	// cloud-controller-managed settings from standard operator settings.
+	pflag.String("rhai-applications-namespace", "",
+		"The namespace where RHAI application components are deployed. "+
+			"Required on non-OpenShift clusters; must be unset on OpenShift (use DSCI spec.applicationsNamespace).")
+	if err := viper.BindEnv("rhai-applications-namespace", "RHAI_APPLICATIONS_NAMESPACE"); err != nil {
+		return err
+	}
+
+	pflag.String("rhai-version", "",
+		"The operator version to report. When set, overrides CSV-based version detection. "+
+			"Must be a valid semver string (e.g. 3.4.0).")
+	if err := viper.BindEnv("rhai-version", "RHAI_VERSION"); err != nil {
+		return err
+	}
+
+	// zap logging flags
+	// these are taken from https://github.com/kubernetes-sigs/controller-runtime/blob/4161b012d114e6c1ea861fd8afcebf7ba2417b49/pkg/log/zap/zap.go#L255
+	// and need to be kept in sync.
+	// This is needed to enable to configure them through viper and all its supported config sources (i.e. cli flags and env vars)
+	pflag.Bool("zap-devel", false,
+		"Development Mode defaults(encoder=consoleEncoder,logLevel=Debug,stackTraceLevel=Warn). "+
+			"Production Mode defaults(encoder=jsonEncoder,logLevel=Info,stackTraceLevel=Error)")
+	if err := viper.BindEnv("zap-devel", "ZAP_DEVEL"); err != nil {
+		return err
+	}
+	pflag.String("zap-encoder", "", "Zap log encoding (one of 'json' or 'console')")
+	if err := viper.BindEnv("zap-encoder", "ZAP_ENCODER"); err != nil {
+		return err
+	}
+	pflag.String("zap-log-level", "info",
+		"Zap Level to configure the verbosity of logging. Can be one of 'debug', 'info', 'error', "+
+			"or any integer value > 0 which corresponds to custom debug levels of increasing verbosity")
+	if err := viper.BindEnv("zap-log-level", "ZAP_LOG_LEVEL"); err != nil {
+		return err
+	}
+	pflag.String("zap-stacktrace-level", "",
+		"Zap Level at and above which stacktraces are captured (one of 'info', 'error', 'panic').")
+	if err := viper.BindEnv("zap-stacktrace-level", "ZAP_STACKTRACE_LEVEL"); err != nil {
+		return err
+	}
+	pflag.String("zap-time-encoding", "", "Zap time encoding (one of 'epoch', 'millis', 'nano', 'iso8601', 'rfc3339' or 'rfc3339nano'). Defaults to 'epoch'.")
+	if err := viper.BindEnv("zap-time-encoding", "ZAP_TIME_ENCODING"); err != nil {
+		return err
+	}
+
+	// Operator environment configuration
+	pflag.String("operator-namespace", "", "The namespace the operator is deployed in. "+
+		"If not set, falls back to the in-cluster service account namespace.")
+	if err := viper.BindEnv("operator-namespace", "OPERATOR_NAMESPACE"); err != nil {
+		return err
+	}
+
+	pflag.String("disable-dsc-config", "", "Disable automatic creation of default DSCInitialization CR.")
+	if err := viper.BindEnv("disable-dsc-config", "DISABLE_DSC_CONFIG"); err != nil {
+		return err
+	}
+
+	pflag.String("default-manifests-path", "", "Base path for component manifests.")
+	if err := viper.BindEnv("default-manifests-path", "DEFAULT_MANIFESTS_PATH"); err != nil {
+		return err
+	}
+
+	pflag.String("default-charts-path", "", "Base path for locally-bundled Helm charts.")
+	if err := viper.BindEnv("default-charts-path", "DEFAULT_CHARTS_PATH"); err != nil {
+		return err
+	}
+
+	pflag.String("platform-type", "", "Platform type override (OpenDataHub, ManagedRHOAI, SelfManagedRHOAI, XKS). "+
+		"If empty, auto-detects from the cluster.")
+	if err := viper.BindEnv("platform-type", "ODH_PLATFORM_TYPE"); err != nil {
+		return err
+	}
+
+	if err := addResourceSuppressionFlags(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func NewZapFlagSet() *flag.FlagSet {
+	return flag.NewFlagSet(pflag.CommandLine.Name()+" zap configurations", flag.ContinueOnError)
+}
+
+func ParseZapFlags(zapFlagSet *flag.FlagSet, zapDevel bool, zapEncoder string, zapLog string, zapStacktrace string, zapTimeEncoding string) error {
+	var zapFlagsValues []string
+	if zapDevel {
+		zapFlagsValues = append(zapFlagsValues, "--zap-devel=true")
+	}
+	if zapEncoder != "" {
+		zapFlagsValues = append(zapFlagsValues, "--zap-encoder="+zapEncoder)
+	}
+	if zapLog != "" {
+		zapFlagsValues = append(zapFlagsValues, "--zap-log-level="+zapLog)
+	}
+	if zapStacktrace != "" {
+		zapFlagsValues = append(zapFlagsValues, "--zap-stacktrace-level="+zapStacktrace)
+	}
+	if zapTimeEncoding != "" {
+		zapFlagsValues = append(zapFlagsValues, "--zap-time-encoding="+zapTimeEncoding)
+	}
+	return zapFlagSet.Parse(zapFlagsValues)
+}
+
+// GetRHAIApplicationsNamespace returns the configured RHAI applications namespace,
+// with surrounding whitespace trimmed.
+func GetRHAIApplicationsNamespace() string {
+	return strings.TrimSpace(viper.GetString("rhai-applications-namespace"))
+}
+
+// GetRHAIVersion returns the configured RHAI version,
+// with surrounding whitespace trimmed.
+func GetRHAIVersion() string {
+	return strings.TrimSpace(viper.GetString("rhai-version"))
+}

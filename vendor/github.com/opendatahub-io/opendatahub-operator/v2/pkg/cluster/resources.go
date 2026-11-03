@@ -1,0 +1,384 @@
+package cluster
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"time"
+
+	fwcluster "github.com/opendatahub-io/odh-platform-utilities/framework/cluster"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	k8serr "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	configApi "github.com/opendatahub-io/opendatahub-operator/v2/api/config/v1alpha2"
+	dscApi "github.com/opendatahub-io/opendatahub-operator/v2/api/datasciencecluster/v3"
+	dsciv2 "github.com/opendatahub-io/opendatahub-operator/v2/api/dscinitialization/v2"
+	infrav1 "github.com/opendatahub-io/opendatahub-operator/v2/api/infrastructure/v1"
+	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/cluster/gvk"
+	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/resources"
+)
+
+// GetSingleton retrieves a singleton instance of a Kubernetes resource of type T.
+//
+// It ensures that only one instance exists and updates the provided object pointer
+// with the retrieved data and:
+//   - If no instances are found, it returns a "NotFound" error.
+//   - If multiple instances are found, it returns an error indicating an unexpected
+//     number of instances.
+//   - A generic error in case of other failures
+//
+// Generic Parameters:
+//   - T: A Kubernetes API resource that implements client.Object.
+//     T **must be a pointer to a struct**, allowing the function to update its contents.
+//
+// Parameters:
+//   - ctx: The context for the API request, allowing for cancellation and timeouts.
+//   - cli: The Kubernetes client used to interact with the cluster.
+//   - obj: A **pointer to a struct** that implements client.Object, which will be populated with the retrieved resource.
+//
+// Returns:
+//   - nil if exactly one instance of the resource is found and successfully assigned to obj.
+//   - An error if no instances or multiple instances are found, or if any failure occurs.
+func GetSingleton[T client.Object](ctx context.Context, cli client.Client, obj T) error {
+	if reflect.ValueOf(obj).IsNil() {
+		return errors.New("obj must be a pointer")
+	}
+
+	objGVK, err := resources.GetGroupVersionKindForObject(cli.Scheme(), obj)
+	if err != nil {
+		return err
+	}
+
+	instances, err := ListGVK(ctx, cli, objGVK)
+	if err != nil {
+		return err
+	}
+
+	switch len(instances) {
+	case 1:
+		if err := cli.Scheme().Convert(&instances[0], obj, ctx); err != nil {
+			return fmt.Errorf("failed to convert resource to %T: %w", obj, err)
+		}
+		return nil
+	case 0:
+		mapping, err := cli.RESTMapper().RESTMapping(objGVK.GroupKind(), objGVK.Version)
+		if err != nil {
+			return fmt.Errorf("failed to get REST mapping for %s: %w", objGVK, err)
+		}
+
+		return k8serr.NewNotFound(
+			schema.GroupResource{
+				Group:    objGVK.Group,
+				Resource: mapping.Resource.Resource,
+			},
+			"",
+		)
+	default:
+		return fmt.Errorf("failed to get a valid %s instance, expected to find 1 instance, found %d", objGVK, len(instances))
+	}
+}
+
+// GetDSC retrieves the DataScienceCluster (DSC) instance from the Kubernetes cluster.
+func GetDSC(ctx context.Context, cli client.Reader) (*dscApi.DataScienceCluster, error) {
+	instances := dscApi.DataScienceClusterList{}
+	if err := cli.List(ctx, &instances); err != nil {
+		return nil, fmt.Errorf("failed to list resources of type %s: %w", gvk.DataScienceCluster, err)
+	}
+
+	switch len(instances.Items) {
+	case 1:
+		return &instances.Items[0], nil
+	case 0:
+		return nil, k8serr.NewNotFound(
+			schema.GroupResource{
+				Group:    gvk.DataScienceCluster.Group,
+				Resource: "datascienceclusters",
+			},
+			"",
+		)
+	default:
+		return nil, fmt.Errorf("failed to get a valid %s instance, expected to find 1 instance, found %d", gvk.DataScienceCluster, len(instances.Items))
+	}
+}
+
+// WatchDataScienceClusters lists all DSC instances and returns reconcile
+// requests for each. Use this as an event mapper to re-queue the DSC
+// controller when related resources (DSCI, GatewayConfig, module CRs) change.
+func WatchDataScienceClusters(ctx context.Context, cli client.Client) []reconcile.Request {
+	instanceList := &dscApi.DataScienceClusterList{}
+	if err := cli.List(ctx, instanceList); err != nil {
+		logf.FromContext(ctx).Error(err, "failed to list DataScienceCluster instances for watch mapping", "resourceKind", "DataScienceCluster")
+		return []reconcile.Request{}
+	}
+
+	requests := make([]reconcile.Request, len(instanceList.Items))
+	for i := range instanceList.Items {
+		requests[i] = reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: instanceList.Items[i].Name},
+		}
+	}
+
+	return requests
+}
+
+// WatchPlatforms returns a reconcile request for the Platform singleton.
+// Platform has a webhook-enforced name so no list call is needed.
+func WatchPlatforms(_ context.Context, _ client.Client) []reconcile.Request {
+	return []reconcile.Request{
+		{NamespacedName: types.NamespacedName{Name: configApi.PlatformInstanceName}},
+	}
+}
+
+// GetDSCI retrieves the DSCInitialization (DSCI) instance from the Kubernetes cluster.
+func GetDSCI(ctx context.Context, cli client.Client) (*dsciv2.DSCInitialization, error) {
+	instances := dsciv2.DSCInitializationList{}
+	if err := cli.List(ctx, &instances); err != nil {
+		return nil, fmt.Errorf("failed to list resources of type %s: %w", gvk.DSCInitialization, err)
+	}
+
+	switch len(instances.Items) {
+	case 1:
+		return &instances.Items[0], nil
+	case 0:
+		return nil, k8serr.NewNotFound(
+			schema.GroupResource{
+				Group:    gvk.DSCInitialization.Group,
+				Resource: "dscinitializations",
+			},
+			"",
+		)
+	default:
+		return nil, fmt.Errorf("failed to get a valid %s instance, expected to find 1 instance, found %d", gvk.DSCInitialization, len(instances.Items))
+	}
+}
+
+// ApplicationNamespace returns the applications namespace.
+// If RHAI_APPLICATIONS_NAMESPACE is explicitly configured it is returned directly,
+// independently of whether DSCI is enabled or not.
+// On OpenShift, the namespace is read from DSCI; a missing DSCI propagates as an
+// error so callers requeue correctly.
+func ApplicationNamespace(ctx context.Context, cli client.Client) (string, error) {
+	if ns := GetRHAIApplicationsNamespace(); ns != "" {
+		return ns, nil
+	}
+	dsci, err := GetDSCI(ctx, cli)
+	if err != nil {
+		return "", fmt.Errorf("failed to get DSCInitialization: %w", err)
+	}
+	return dsci.Spec.ApplicationsNamespace, nil
+}
+
+// MonitoringNamespace returns the monitoring namespace from DSCInitialization.
+func MonitoringNamespace(ctx context.Context, cli client.Client) (string, error) {
+	dsci, err := GetDSCI(ctx, cli)
+	if err != nil {
+		if k8serr.IsNotFound(err) {
+			return "", fmt.Errorf("MonitoringNamespace not available, DSCI not found: %w", err)
+		}
+		return "", fmt.Errorf("failed to get DSCInitialization: %w", err)
+	}
+	return dsci.Spec.Monitoring.Namespace, nil
+}
+
+// NamespaceExists checks if a given namespace exists in the cluster and is not terminating.
+func NamespaceExists(ctx context.Context, c client.Client, name string) (bool, error) {
+	ns := &corev1.Namespace{}
+	err := c.Get(ctx, types.NamespacedName{Name: name}, ns)
+	if err != nil {
+		if k8serr.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	// Do not consider terminating namespaces as "existing" for resource creation
+	if ns.DeletionTimestamp != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
+// GetHardwareProfile retrieves a specific HardwareProfile instance by name and namespace.
+func GetHardwareProfile(ctx context.Context, cli client.Client, name, namespace string) (*infrav1.HardwareProfile, error) {
+	hwProfile := &infrav1.HardwareProfile{}
+	err := cli.Get(ctx, client.ObjectKey{
+		Name:      name,
+		Namespace: namespace,
+	}, hwProfile)
+	if err != nil {
+		return nil, err
+	}
+	return hwProfile, nil
+}
+
+// CreateHardwareProfile creates a HardwareProfile resource in the cluster.
+// If the resource already exists, it returns nil (idempotent operation).
+//
+// Parameters:
+//   - ctx: The context for the request
+//   - cli: The Kubernetes client used to create the resource
+//   - hwp: The HardwareProfile to create
+//
+// Returns:
+//   - error: An error if the creation fails for reasons other than "already exists"
+func CreateHardwareProfile(ctx context.Context, cli client.Client, hwp *infrav1.HardwareProfile) error {
+	if err := cli.Create(ctx, hwp); err != nil {
+		if !k8serr.IsAlreadyExists(err) {
+			return fmt.Errorf("failed to create HardwareProfile '%s/%s': %w", hwp.Namespace, hwp.Name, err)
+		}
+	}
+	return nil
+}
+
+// UpdatePodSecurityRolebinding update default rolebinding which is created in applications namespace by manifests
+// being used by different components and SRE monitoring.
+func UpdatePodSecurityRolebinding(ctx context.Context, cli client.Client, namespace string, serviceAccountsList ...string) error {
+	foundRoleBinding := &rbacv1.RoleBinding{}
+	if err := cli.Get(ctx, client.ObjectKey{Name: namespace, Namespace: namespace}, foundRoleBinding); err != nil {
+		return fmt.Errorf("error to get rolebinding %s from namespace %s: %w", namespace, namespace, err)
+	}
+
+	for _, sa := range serviceAccountsList {
+		// Append serviceAccount if not added already
+		if !SubjectExistInRoleBinding(foundRoleBinding.Subjects, sa, namespace) {
+			foundRoleBinding.Subjects = append(foundRoleBinding.Subjects, rbacv1.Subject{
+				Kind:      rbacv1.ServiceAccountKind,
+				Name:      sa,
+				Namespace: namespace,
+			})
+		}
+	}
+
+	if err := cli.Update(ctx, foundRoleBinding); err != nil {
+		return fmt.Errorf("error update rolebinding %s with serviceaccount: %w", namespace, err)
+	}
+
+	return nil
+}
+
+// SubjectExistInRoleBinding return whether RoleBinding matching service account and namespace exists or not.
+func SubjectExistInRoleBinding(subjectList []rbacv1.Subject, serviceAccountName, namespace string) bool {
+	for _, subject := range subjectList {
+		if subject.Name == serviceAccountName && subject.Namespace == namespace {
+			return true
+		}
+	}
+
+	return false
+}
+
+// CreateOrUpdateConfigMap creates a new configmap or updates an existing one.
+// If the configmap already exists, it will be updated with the merged Data and MetaOptions, if any.
+// ConfigMap.ObjectMeta.Name and ConfigMap.ObjectMeta.Namespace are both required, it returns an error otherwise.
+func CreateOrUpdateConfigMap(ctx context.Context, c client.Client, desiredCfgMap *corev1.ConfigMap, metaOptions ...MetaOptions) error {
+	if applyErr := ApplyMetaOptions(desiredCfgMap, metaOptions...); applyErr != nil {
+		return applyErr
+	}
+
+	if desiredCfgMap.GetName() == "" || desiredCfgMap.GetNamespace() == "" {
+		return errors.New("configmap name and namespace must be set")
+	}
+
+	// Explicitly setting the TypeMeta is required to use resources.Apply()
+	// Otherwise will return error stating that the unstructured object has no kind
+	desiredCfgMap.TypeMeta = metav1.TypeMeta{
+		APIVersion: gvk.ConfigMap.Version,
+		Kind:       gvk.ConfigMap.Kind,
+	}
+
+	opts := []client.ApplyOption{
+		client.ForceOwnership,
+		client.FieldOwner(resources.PlatformFieldOwner),
+	}
+	err := resources.Apply(ctx, c, desiredCfgMap, opts...)
+	if err != nil && !k8serr.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
+}
+
+// CreateNamespace creates a namespace and apply metadata.
+// If a namespace already exists, the operation has no effect on it.
+func CreateNamespace(ctx context.Context, cli client.Client, namespace string, metaOptions ...MetaOptions) (*corev1.Namespace, error) {
+	desiredNamespace := &corev1.Namespace{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: gvk.Namespace.Version,
+			Kind:       gvk.Namespace.Kind,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: namespace,
+		},
+	}
+
+	if err := ApplyMetaOptions(desiredNamespace, metaOptions...); err != nil {
+		return nil, err
+	}
+
+	opts := []client.ApplyOption{
+		client.ForceOwnership,
+		client.FieldOwner(resources.PlatformFieldOwner),
+	}
+	err := resources.Apply(ctx, cli, desiredNamespace, opts...)
+	if err != nil && !k8serr.IsAlreadyExists(err) {
+		return nil, err
+	}
+
+	return desiredNamespace, nil
+}
+
+func CreateWithRetry(ctx context.Context, cli client.Client, obj client.Object) error {
+	log := logf.FromContext(ctx)
+	backoff := wait.Backoff{
+		Duration: 2 * time.Second,
+		Factor:   2.0,
+		Steps:    5,
+	}
+	// 1 minute timeout
+	return wait.ExponentialBackoffWithContext(ctx, backoff, func(ctx context.Context) (bool, error) {
+		// Create can return:
+		// If webhook enabled:
+		//   - no error (err == nil)
+		//   - 500 InternalError likely if webhook is not available (yet)
+		//   - 403 Forbidden if webhook blocks creation (check of existence)
+		//   - some problem (real error)
+		// else, if webhook disabled:
+		//   - no error (err == nil)
+		//   - 409 AlreadyExists if object exists
+		//   - some problem (real error)
+		errCreate := cli.Create(ctx, obj)
+		if errCreate == nil {
+			return true, nil
+		}
+
+		// check existence, success case for the function, covers 409 and 403 (or newly created)
+		errGet := cli.Get(ctx, client.ObjectKeyFromObject(obj), obj)
+		if errGet == nil {
+			return true, nil
+		}
+
+		// retry if 500, assume webhook is not available
+		if k8serr.IsInternalError(errCreate) {
+			log.Info("Error creating object, retrying...", "reason", errCreate)
+			return false, nil
+		}
+
+		// some other error
+		return false, errCreate
+	})
+}
+
+var (
+	GetCRD            = fwcluster.GetCRD
+	HasCRD            = fwcluster.HasCRD
+	IsAPIAvailable    = fwcluster.IsAPIAvailable
+	HasCRDWithVersion = fwcluster.HasCRDWithVersion
+	ListGVK           = fwcluster.ListGVK
+)

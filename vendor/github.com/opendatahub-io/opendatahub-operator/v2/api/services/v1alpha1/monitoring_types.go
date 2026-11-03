@@ -1,0 +1,189 @@
+/*
+Copyright 2023.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v1alpha1
+
+import (
+	"github.com/opendatahub-io/opendatahub-operator/v2/api/common"
+	resource "k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	runtime "k8s.io/apimachinery/pkg/runtime"
+)
+
+const (
+	MonitoringServiceName = "monitoring"
+	// MonitoringInstanceName the name of the Monitoring instance singleton.
+	// The odh-observability module CRD enforces this name via CEL.
+	MonitoringInstanceName = "default-monitoring"
+	MonitoringKind         = "Monitoring"
+	// MonitoringCRDName is the CRD installed by the odh-observability module chart.
+	MonitoringCRDName = "monitorings.services.platform.opendatahub.io"
+)
+
+// Metrics defines the desired state of metrics for the monitoring service
+// +kubebuilder:validation:XValidation:rule="has(self.storage) || !has(self.replicas) || self.replicas == 0",message="Non-zero replicas require metrics.storage to be configured"
+type Metrics struct {
+	Storage *MetricsStorage `json:"storage,omitempty"`
+	// Replicas specifies the number of replicas in monitoringstack. If not set, it defaults
+	// to 1 on single-node clusters and 2 on multi-node clusters.
+	// +kubebuilder:validation:Minimum=0
+	Replicas int32 `json:"replicas,omitempty"`
+	// Exporters defines custom metrics exporters for sending metrics to external observability tools.
+	// Each key represents the exporter name, and the value contains the exporter configuration.
+	// The configuration follows the OpenTelemetry Collector exporter format.
+	// Reserved names 'prometheus' and 'otlp/tempo' cannot be used as they conflict with built-in exporters.
+	// Maximum 10 exporters allowed, each config must be less than 10KB (enforced at reconciliation time).
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="!('prometheus' in self)",message="exporter name 'prometheus' is reserved and cannot be used"
+	// +kubebuilder:validation:XValidation:rule="!('otlp/tempo' in self)",message="exporter name 'otlp/tempo' is reserved and cannot be used"
+	// +kubebuilder:validation:XValidation:rule="size(self) <= 10",message="maximum 10 exporters allowed"
+	Exporters map[string]runtime.RawExtension `json:"exporters,omitempty"`
+}
+
+// MetricsStorage defines the storage configuration for the monitoring service
+type MetricsStorage struct {
+	// Size specifies the storage size for the MonitoringStack (e.g, "5Gi", "10Mi")
+	Size resource.Quantity `json:"size,omitempty"`
+	// Retention specifies how long metrics data should be retained (e.g., "1d", "2w")
+	Retention string `json:"retention,omitempty"`
+}
+
+// Traces enables and defines the configuration for traces collection.
+// Built-in Tempo requires storage; exporters-only configs (external backends) omit storage.
+// +kubebuilder:validation:XValidation:rule="has(self.storage) || (has(self.exporters) && size(self.exporters) > 0)",message="traces requires storage and/or at least one exporter"
+type Traces struct {
+	// Storage configures the built-in Tempo backend. Omit when using exporters only (external observability).
+	// +optional
+	Storage *TracesStorage `json:"storage,omitempty"`
+	// SampleRatio determines the sampling rate for traces
+	// Value should be between 0.0 (no sampling) and 1.0 (sample all traces)
+	// +kubebuilder:validation:Pattern="^(0(\\.[0-9]+)?|1(\\.0+)?)$"
+	SampleRatio string `json:"sampleRatio,omitempty"`
+	// TLS configuration for Tempo gRPC connections
+	// +optional
+	TLS *TracesTLS `json:"tls,omitempty"`
+	// Exporters defines custom trace exporters for sending traces to external observability tools.
+	// Each key represents the exporter name, and the value contains the exporter configuration.
+	// The configuration follows the OpenTelemetry Collector exporter format.
+	// +optional
+	Exporters map[string]runtime.RawExtension `json:"exporters,omitempty"`
+}
+
+// TracesTLS defines TLS configuration for trace ingestion and query APIs
+type TracesTLS struct {
+	// Enabled enables TLS for Tempo OTLP ingestion (gRPC/HTTP) and query APIs (HTTP)
+	// TLS is disabled by default to maintain backward compatibility
+	Enabled bool `json:"enabled,omitempty"`
+	// CertificateSecret specifies the name of the secret containing TLS certificates
+	// If not specified, OpenShift service serving certificates will be used
+	CertificateSecret string `json:"certificateSecret,omitempty"`
+	// CAConfigMap specifies the name of the ConfigMap containing the CA certificate
+	// Required for mutual TLS authentication
+	CAConfigMap string `json:"caConfigMap,omitempty"`
+}
+
+// Storage backend type constants
+const (
+	// StorageBackendPV represents persistent volume storage backend
+	StorageBackendPV = "pv"
+	// StorageBackendS3 represents S3-compatible storage backend
+	StorageBackendS3 = "s3"
+	// StorageBackendGCS represents Google Cloud Storage backend
+	StorageBackendGCS = "gcs"
+)
+
+// TracesStorage defines the storage configuration for tracing
+// +kubebuilder:validation:XValidation:rule="self.backend != 'pv' ? (has(self.secret) && self.secret != \"\") : true", message="When backend is s3 or gcs, the 'secret' field must be specified and non-empty"
+// +kubebuilder:validation:XValidation:rule="self.backend != 'pv' ? !has(self.size) : true", message="Size is supported when backend is pv only"
+type TracesStorage struct {
+	// Backend defines the storage backend type.
+	// Valid values are "pv", "s3", and "gcs".
+	// +kubebuilder:validation:Enum="pv";"s3";"gcs"
+	Backend string `json:"backend"`
+
+	// Size specifies the size of the storage.
+	// This field is optional.
+	// +optional
+	Size string `json:"size,omitempty"`
+
+	// Secret specifies the secret name for storage credentials.
+	// This field is required when the backend is not "pv".
+	// +optional
+	Secret string `json:"secret,omitempty"`
+
+	// Retention specifies how long trace data should be retained globally (e.g., "60m", "10h")
+	Retention metav1.Duration `json:"retention,omitempty"`
+}
+
+// Alerting configuration for Prometheus
+type Alerting struct {
+}
+
+// Logs defines the configuration for cluster log forwarding via the ClusterLogForwarder operator.
+type Logs struct {
+	// Storage configures the LokiStack storage backend for log forwarding.
+	// Required: the operator deploys a shared LokiStack used by both log forwarding and usage logs.
+	// +kubebuilder:validation:Required
+	Storage *LokiStorageConfig `json:"storage"`
+
+	// InferenceNamespaces lists the namespaces whose application logs should be forwarded to Loki.
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?$`
+	// +kubebuilder:validation:items:MaxLength=63
+	InferenceNamespaces []string `json:"inferenceNamespaces,omitempty"`
+}
+
+// UsageLogs defines the configuration for usage log collection.
+type UsageLogs struct {
+	// Storage configures the LokiStack storage backend (S3).
+	// When configured, the operator deploys a LokiStack instance and auto-configures the collector endpoint.
+	// +kubebuilder:validation:Required
+	Storage *LokiStorageConfig `json:"storage"`
+}
+
+// LokiStorageConfig defines storage configuration for LokiStack.
+type LokiStorageConfig struct {
+	// Type specifies the storage backend: "s3".
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=s3
+	Type string `json:"type"`
+
+	// SecretName is the name of the Secret containing storage credentials.
+	// For S3: must contain keys: access_key_id, access_key_secret, bucketnames, endpoint, region, insecure, s3ForcePathStyle
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +kubebuilder:validation:MaxLength=253
+	SecretName string `json:"secretName"`
+
+	// CredentialMode specifies how credentials are provided to LokiStack.
+	// Valid values: "static", "token", "token-cco".
+	// +optional
+	// +kubebuilder:default="static"
+	// +kubebuilder:validation:Enum=static;token;token-cco
+	CredentialMode string `json:"credentialMode,omitempty"`
+
+	// StorageClassName specifies the storage class for LokiStack PVCs.
+	// +optional
+	// +kubebuilder:default="gp3-csi"
+	// +kubebuilder:validation:MaxLength=253
+	StorageClassName string `json:"storageClassName,omitempty"`
+}
+
+type DSCIMonitoring struct {
+	// configuration fields common across services
+	common.ManagementSpec `json:",inline"`
+	// monitoring specific fields
+	MonitoringCommonSpec `json:",inline"`
+}

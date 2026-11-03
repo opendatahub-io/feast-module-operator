@@ -1,10 +1,12 @@
 # Build artifacts
 bin/
-vendor/
 *.test
 cover.out
 covmeta*
 covcounters*
+
+# vendor/ is committed so ods-ci / airgapped e2e can run with -mod=vendor
+# and avoid slow proxy.golang.org downloads that exceed the Robot timeout.
 
 # IDE
 .vscode/

@@ -1,0 +1,47 @@
+// Package cluster provides runtime helpers for working with Kubernetes
+// clusters: singleton custom resource retrieval, metadata functional options,
+// dynamic ownership, and stateless cluster/platform detection.
+//
+// # Singleton Helpers
+//
+// The ODH Onboarding Guide mandates that all module CRDs are cluster-scoped
+// singletons with enforced naming. [GetSingleton] is a generic function that
+// retrieves the single instance of a given type, returning an error if zero
+// or more than one instance exists.
+//
+// # Ownership
+//
+// Two ownership mechanisms are provided:
+//
+//   - Standard OwnerReferences: [ControlledBy] and [OwnedBy] add native
+//     Kubernetes OwnerReferences. Use these when owner and child reside in the
+//     same namespace (or the owner is cluster-scoped and the child is too).
+//   - Annotation-based owner resolution: [WithOwnerAnnotations] stamps
+//     ownership metadata on child resources, and [EnqueueByOwnerAnnotation]
+//     returns a [handler.MapFunc] that resolves those annotations into
+//     reconcile requests. Use this when child resources live in different
+//     namespaces than the owner, since Kubernetes OwnerReferences require
+//     same-namespace residency. This is distinct from OwnerReference-based
+//     dynamic ownership (e.g. dynamicownership.Action), which sets real
+//     OwnerReferences for same namespace resources.
+//
+// # Cluster Detection
+//
+// Two conceptually separate detection layers are exposed:
+//
+//   - Cluster type detection (infrastructure layer): "Am I on OpenShift or
+//     vanilla Kubernetes?" — see [DetectClusterType], [DetectClusterInfo].
+//   - Platform variant detection (product layer): "Which product distribution
+//     is deploying me?" — see [DetectPlatform].
+//
+// All detection functions are stateless: they accept a [client.Reader] (or
+// [client.Client]) and [context.Context]. There are no package-level globals
+// or Init() functions.
+//
+// Sub-packages provide additional detection helpers:
+//
+//   - cluster/openshift: OpenShift-specific queries (version, auth, SNO,
+//     domain). Uses unstructured clients so no openshift/api import is required.
+//   - cluster/olm: OLM-specific queries (operator existence, subscriptions).
+//     Uses unstructured clients so no operator-framework/api import is required.
+package cluster
