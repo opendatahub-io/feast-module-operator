@@ -1,0 +1,10 @@
+package gc
+
+import (
+	fwgc "github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/gc"
+)
+
+var (
+	DeletedTotal = fwgc.DeletedTotal
+	CyclesTotal  = fwgc.CyclesTotal
+)

@@ -1,10 +1,12 @@
 # Build artifacts
 bin/
-vendor/
 *.test
 cover.out
 covmeta*
 covcounters*
+
+# vendor/ is committed so ods-ci e2e can use -mod=vendor and skip
+# proxy.golang.org downloads that exceed the Robot Framework timeout.
 
 # IDE
 .vscode/

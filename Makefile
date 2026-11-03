@@ -56,18 +56,22 @@ fmt: ## Run golangci-lint formatters against code.
 vet: ## Run go vet against code.
 	go vet ./...
 
+# Prefer committed vendor/ so CI (ods-ci) compiles offline.
+GOFLAGS ?= $(shell test -d vendor && echo -mod=vendor)
+
 .PHONY: deps
-deps: ## Tidy and verify Go module dependencies.
+deps: ## Tidy, vendor and verify Go module dependencies.
 	go mod tidy
+	go mod vendor
 	go mod verify
 
 .PHONY: test
 test: manifests generate fmt vet ## Run unit tests.
-	go test -ldflags "$(LDFLAGS)" $$(go list ./... | grep -v /e2e | grep -v /integration) -coverprofile cover.out
+	GOFLAGS="$(GOFLAGS)" go test -ldflags "$(LDFLAGS)" $$(go list ./... | grep -v /e2e | grep -v /integration) -coverprofile cover.out
 
 .PHONY: test-integration-run
 test-integration-run: ## Run integration tests only (cluster must be prepared).
-	INTEGRATION_TEST_NAMESPACE="$(INTEGRATION_TEST_NAMESPACE)" go test -count=1 -ldflags "$(LDFLAGS)" ./test/integration/ -tags=integration -v -timeout 5m -failfast
+	INTEGRATION_TEST_NAMESPACE="$(INTEGRATION_TEST_NAMESPACE)" GOFLAGS="$(GOFLAGS)" go test -count=1 -ldflags "$(LDFLAGS)" ./test/integration/ -tags=integration -v -timeout 5m -failfast
 
 .PHONY: test-integration-setup
 test-integration-setup: manifests generate ## Prepare the cluster for integration tests.
@@ -78,8 +82,8 @@ test-integration-setup: manifests generate ## Prepare the cluster for integratio
 test-integration: test-integration-setup test-integration-run ## Run integration tests (prepare cluster, then run tests). ODH_PLATFORM_TYPE=odh|rhoai|managed-rhoai
 
 .PHONY: test-e2e-run
-test-e2e-run: ## Run e2e tests only (operator must already be deployed).
-	OPERATOR_NAMESPACE="$(OPERATOR_NAMESPACE)" go test -count=1 -ldflags "$(LDFLAGS)" ./test/e2e/ -tags=e2e -v -timeout 5m -failfast
+test-e2e-run: ## Run e2e tests only (operator must already be deployed). Uses -mod=vendor when vendor/ exists.
+	OPERATOR_NAMESPACE="$(OPERATOR_NAMESPACE)" GOFLAGS="$(GOFLAGS)" go test -count=1 -ldflags "$(LDFLAGS)" ./test/e2e/ -tags=e2e -v -timeout 5m -failfast
 
 .PHONY: test-e2e-setup
 test-e2e-setup: ## Prepare the cluster for e2e tests.
