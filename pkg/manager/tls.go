@@ -226,9 +226,24 @@ func strictProfileTLSConfig(profile configv1.TLSProfileSpec) (func(*tls.Config),
 		return nil, nil, fmt.Errorf("unsupported TLS minimum version %q", profile.MinTLSVersion)
 	}
 
-	profileWithoutCiphers := profile
-	profileWithoutCiphers.Ciphers = nil
-	baseTLSOpt, unsupported := frameworktls.ConfigFromProfile(profileWithoutCiphers)
+	var curvePreferences []tls.CurveID
+	var unsupportedGroups []string
+	if len(profile.Groups) > 0 {
+		var dropped []configv1.TLSGroup
+		curvePreferences, dropped = ocpcrypto.TLSGroupsToCurveIDs(profile.Groups)
+		for _, group := range dropped {
+			unsupportedGroups = append(unsupportedGroups, string(group))
+		}
+		if len(curvePreferences) == 0 {
+			return nil, nil, fmt.Errorf("TLS profile has no usable groups: %v", profile.Groups)
+		}
+	}
+
+	profileForBaseTLSOpt := profile
+	profileForBaseTLSOpt.Ciphers = nil
+	profileForBaseTLSOpt.Groups = nil
+	baseTLSOpt, unsupported := frameworktls.ConfigFromProfile(profileForBaseTLSOpt)
+	unsupported = append(unsupported, unsupportedGroups...)
 	var cipherSuites []uint16
 	if minimum == tls.VersionTLS13 {
 		usable := len(profile.Ciphers) == 0
@@ -271,9 +286,12 @@ func strictProfileTLSConfig(profile configv1.TLSProfileSpec) (func(*tls.Config),
 		config.MinVersion = minimum
 		if minimum == tls.VersionTLS13 {
 			config.CipherSuites = nil
-			return
+		} else {
+			config.CipherSuites = append([]uint16(nil), cipherSuites...)
 		}
-		config.CipherSuites = append([]uint16(nil), cipherSuites...)
+		if len(curvePreferences) > 0 {
+			config.CurvePreferences = append([]tls.CurveID(nil), curvePreferences...)
+		}
 	}, unsupported, nil
 }
 

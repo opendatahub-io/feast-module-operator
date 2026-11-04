@@ -210,6 +210,64 @@ func TestMetricsTLSOptions(t *testing.T) {
 		require.Nil(t, resolved.CipherSuites)
 	})
 
+	t.Run("TLS groups filter curve preferences", func(t *testing.T) {
+		t.Parallel()
+
+		options, err := metricsTLSOptions(frameworktls.LoadResult{
+			Spec: configv1.TLSProfileSpec{
+				MinTLSVersion: configv1.VersionTLS13,
+				Groups: []configv1.TLSGroup{
+					configv1.TLSGroup("FutureGroup"),
+					configv1.TLSGroupSecP256r1,
+					configv1.TLSGroupX25519,
+				},
+			},
+			AdherencePolicy: configv1.TLSAdherencePolicyStrictAllComponents,
+			Watchable:       true,
+		})
+
+		require.NoError(t, err)
+		resolved := &tls.Config{}
+		for _, option := range options {
+			option(resolved)
+		}
+		require.Equal(t, []tls.CurveID{tls.CurveP256, tls.X25519}, resolved.CurvePreferences)
+	})
+
+	t.Run("empty TLS groups keep Go defaults", func(t *testing.T) {
+		t.Parallel()
+
+		options, err := metricsTLSOptions(frameworktls.LoadResult{
+			Spec: configv1.TLSProfileSpec{
+				MinTLSVersion: configv1.VersionTLS13,
+			},
+			AdherencePolicy: configv1.TLSAdherencePolicyStrictAllComponents,
+			Watchable:       true,
+		})
+
+		require.NoError(t, err)
+		resolved := &tls.Config{}
+		for _, option := range options {
+			option(resolved)
+		}
+		require.Nil(t, resolved.CurvePreferences)
+	})
+
+	t.Run("TLS groups with no usable entries fail", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := metricsTLSOptions(frameworktls.LoadResult{
+			Spec: configv1.TLSProfileSpec{
+				MinTLSVersion: configv1.VersionTLS13,
+				Groups:        []configv1.TLSGroup{configv1.TLSGroup("FutureGroup")},
+			},
+			AdherencePolicy: configv1.TLSAdherencePolicyStrictAllComponents,
+			Watchable:       true,
+		})
+
+		require.Error(t, err)
+	})
+
 	t.Run("TLS 1.3 with no usable ciphers fails", func(t *testing.T) {
 		t.Parallel()
 
@@ -358,6 +416,7 @@ func TestLoadTLSProfileValidation(t *testing.T) {
 					Custom: &configv1.CustomTLSProfile{TLSProfileSpec: configv1.TLSProfileSpec{
 						MinTLSVersion: configv1.VersionTLS12,
 						Ciphers:       []string{"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"},
+						Groups:        []configv1.TLSGroup{configv1.TLSGroupX25519},
 					}},
 				},
 			}},
@@ -365,6 +424,26 @@ func TestLoadTLSProfileValidation(t *testing.T) {
 
 		require.NoError(t, err)
 		require.Equal(t, []string{"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"}, result.Spec.Ciphers)
+		require.Equal(t, []configv1.TLSGroup{configv1.TLSGroupX25519}, result.Spec.Groups)
+	})
+
+	t.Run("strict profile with no usable TLS groups fails", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := loadTLSProfile(context.Background(), tlsProfileReader{
+			server: &configv1.APIServer{Spec: configv1.APIServerSpec{
+				TLSAdherence: configv1.TLSAdherencePolicyStrictAllComponents,
+				TLSSecurityProfile: &configv1.TLSSecurityProfile{
+					Type: configv1.TLSProfileCustomType,
+					Custom: &configv1.CustomTLSProfile{TLSProfileSpec: configv1.TLSProfileSpec{
+						MinTLSVersion: configv1.VersionTLS13,
+						Groups:        []configv1.TLSGroup{configv1.TLSGroup("FutureGroup")},
+					}},
+				},
+			}},
+		})
+
+		require.Error(t, err)
 	})
 
 	t.Run("unknown profile type is strict for unknown adherence", func(t *testing.T) {
