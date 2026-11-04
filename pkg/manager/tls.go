@@ -248,15 +248,12 @@ func strictProfileTLSConfig(profile configv1.TLSProfileSpec) (func(*tls.Config),
 	if minimum == tls.VersionTLS13 {
 		usable := len(profile.Ciphers) == 0
 		for _, cipher := range profile.Ciphers {
-			code, found := cipherSuiteID(cipher)
+			code, _ := cipherSuiteID(cipher)
 			switch code {
 			case tls.TLS_AES_128_GCM_SHA256, tls.TLS_AES_256_GCM_SHA384, tls.TLS_CHACHA20_POLY1305_SHA256:
 				usable = true
 			default:
 				unsupported = append(unsupported, cipher)
-			}
-			if !found {
-				continue
 			}
 		}
 		if !usable {
