@@ -107,6 +107,7 @@ type ControllerConfig struct {
 
 type MetricsConfig struct {
 	BindAddress string `mapstructure:"bind-address"`
+	CertDir     string `mapstructure:"cert-dir"`
 }
 
 type HealthConfig struct {

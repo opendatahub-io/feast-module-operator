@@ -19,7 +19,9 @@ package manager
 import (
 	"context"
 	"fmt"
+	"time"
 
+	configv1 "github.com/openshift/api/config/v1"
 	promv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"github.com/spf13/viper"
 	appsv1 "k8s.io/api/apps/v1"
@@ -76,10 +78,28 @@ func New(
 		return nil, fmt.Errorf("config is nil")
 	}
 
+	scheme := NewScheme()
+	utilruntime.Must(configv1.AddToScheme(scheme))
+
+	bootstrapConfig := rest.CopyConfig(kubeConfig)
+	bootstrapConfig.Timeout = 10 * time.Second
+	bootstrapClient, err := client.New(bootstrapConfig, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("creating TLS profile bootstrap client: %w", err)
+	}
+	bootstrapCtx, cancelBootstrap := context.WithTimeout(ctx, 10*time.Second)
+	tlsProfile, err := loadTLSProfile(bootstrapCtx, bootstrapClient)
+	cancelBootstrap()
+	if err != nil {
+		return nil, fmt.Errorf("loading cluster TLS profile and adherence: %w", err)
+	}
+	tlsOpts, err := metricsTLSOptions(tlsProfile)
+	if err != nil {
+		return nil, fmt.Errorf("resolving metrics TLS options: %w", err)
+	}
+
 	viper.Set("rhai-applications-namespace", cfg.ApplicationsNamespace)
 	cluster.SetRHAIApplicationNamespace(cfg.ApplicationsNamespace)
-
-	scheme := NewScheme()
 
 	// Namespace-scoped cache config: scope informers to the applications
 	// namespace so the operator only watches its own resources.
@@ -90,7 +110,10 @@ func New(
 	mgrOpts := ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
-			BindAddress: cfg.Controller.Metrics.BindAddress,
+			BindAddress:   cfg.Controller.Metrics.BindAddress,
+			SecureServing: true,
+			TLSOpts:       tlsOpts,
+			CertDir:       cfg.Controller.Metrics.CertDir,
 		},
 		HealthProbeBindAddress:        cfg.Controller.Health.BindAddress,
 		PprofBindAddress:              cfg.Controller.Pprof.BindAddress,
@@ -125,6 +148,9 @@ func New(
 			opt(&mgrOpts)
 		}
 	}
+	mgrOpts.Metrics.SecureServing = true
+	mgrOpts.Metrics.TLSOpts = tlsOpts
+	mgrOpts.Metrics.CertDir = cfg.Controller.Metrics.CertDir
 
 	ctrlMgr, err := ctrl.NewManager(kubeConfig, mgrOpts)
 	if err != nil {
@@ -145,6 +171,10 @@ func New(
 	}
 	if err := mgr.AddReadyzCheck(readyCheckName, healthz.Ping); err != nil {
 		return nil, fmt.Errorf("setting up ready check: %w", err)
+	}
+
+	if err := registerTLSProfileWatcher(ctrlMgr, tlsProfile); err != nil {
+		return nil, err
 	}
 
 	return mgr, nil
