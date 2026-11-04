@@ -56,8 +56,7 @@ fmt: ## Run golangci-lint formatters against code.
 vet: ## Run go vet against code.
 	go vet ./...
 
-# When vendor/ is present, force -mod=vendor so ods-ci compiles offline and
-# does not burn the Robot Framework timeout on proxy.golang.org downloads.
+# Prefer committed vendor/ so CI (ods-ci) compiles offline.
 GOFLAGS ?= $(shell test -d vendor && echo -mod=vendor)
 
 .PHONY: deps

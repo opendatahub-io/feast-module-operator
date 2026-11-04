@@ -5,8 +5,8 @@ cover.out
 covmeta*
 covcounters*
 
-# vendor/ is committed so ods-ci / airgapped e2e can run with -mod=vendor
-# and avoid slow proxy.golang.org downloads that exceed the Robot timeout.
+# vendor/ is committed so ods-ci e2e can use -mod=vendor and skip
+# proxy.golang.org downloads that exceed the Robot Framework timeout.
 
 # IDE
 .vscode/
