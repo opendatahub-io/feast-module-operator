@@ -8,10 +8,10 @@ require (
 	github.com/lburgazzoli/gomega-matchers v0.4.1-0.20260219145423-4061a5fb8799
 	github.com/onsi/gomega v1.42.1
 	github.com/opendatahub-io/odh-platform-utilities v0.5.0
-	github.com/opendatahub-io/odh-platform-utilities/framework v0.2.0
+	github.com/opendatahub-io/odh-platform-utilities/framework v0.4.0
 	github.com/opendatahub-io/opendatahub-operator/v2 v2.8.1-0.20261016183752-544f883498d3
 	github.com/openshift/api v0.0.0-20261002115817-f8795cdde518
-	github.com/openshift/controller-runtime-common v0.0.0-20261005093240-b39eb7218441
+	github.com/openshift/controller-runtime-common v0.0.0-20261026124434-bdfc411d93cd
 	github.com/openshift/library-go v0.0.0-20261001144932-192662696fc7
 	github.com/operator-framework/api v0.42.0
 	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.74.0
