@@ -84,6 +84,10 @@ import (
 // +kubebuilder:rbac:groups=authorization.k8s.io,resources=subjectaccessreviews,verbs=create
 // +kubebuilder:rbac:groups=kubeflow.org,resources=notebooks,verbs=get;list;watch
 // +kubebuilder:rbac:groups=mlflow.opendatahub.io,resources=mlflows,verbs=get;list;watch
+// +kubebuilder:rbac:groups=olm.operatorframework.io,resources=clustercatalogs,verbs=get
+// +kubebuilder:rbac:groups=olm.operatorframework.io,resources=clusterextensions,verbs=list
+// +kubebuilder:rbac:groups=operators.coreos.com,resources=catalogsources,verbs=get
+// +kubebuilder:rbac:groups=operators.coreos.com,resources=operatorconditions,verbs=list
 // +kubebuilder:rbac:urls=/metrics,verbs=get
 
 func NewReconciler(
