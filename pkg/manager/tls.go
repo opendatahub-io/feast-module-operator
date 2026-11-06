@@ -198,14 +198,23 @@ func strictTLSProfileSpec(profile *configv1.TLSSecurityProfile) (configv1.TLSPro
 }
 
 func isTransientTLSReadError(err error) bool {
-	var netErr net.Error
-	return errors.Is(err, context.DeadlineExceeded) ||
-		k8serrors.IsServiceUnavailable(err) ||
+	// Explicitly transient API statuses first.
+	if k8serrors.IsServiceUnavailable(err) ||
 		k8serrors.IsTimeout(err) ||
 		k8serrors.IsServerTimeout(err) ||
 		k8serrors.IsTooManyRequests(err) ||
 		k8serrors.IsInternalError(err) ||
-		utilnet.IsConnectionRefused(err) ||
+		errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	// Reject other API-status errors before checking transport predicates.
+	var statusErr *k8serrors.StatusError
+	if errors.As(err, &statusErr) {
+		return false
+	}
+	// Transport-level errors for non-API-status failures.
+	var netErr net.Error
+	return utilnet.IsConnectionRefused(err) ||
 		utilnet.IsConnectionReset(err) ||
 		utilnet.IsProbableEOF(err) ||
 		utilnet.IsHTTP2ConnectionLost(err) ||
