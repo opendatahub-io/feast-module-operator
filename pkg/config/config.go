@@ -37,6 +37,7 @@ const (
 	KeyPlatformType    = "platform-type"
 
 	KeyMetricsBindAddr    = "controller.metrics.bind-address"
+	KeyMetricsCertDir     = "controller.metrics.cert-dir"
 	KeyHealthBindAddr     = "controller.health.bind-address"
 	KeyLeaderElectEnabled = "controller.leader-election.enabled"
 	KeyLeaderElectID      = "controller.leader-election.id"
@@ -107,6 +108,7 @@ type ControllerConfig struct {
 
 type MetricsConfig struct {
 	BindAddress string `mapstructure:"bind-address"`
+	CertDir     string `mapstructure:"cert-dir"`
 }
 
 type HealthConfig struct {
@@ -197,6 +199,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault(KeyDataRegistryEnabled, DefaultDataRegistryEnabled)
 
 	v.SetDefault(KeyMetricsBindAddr, DefaultMetricsBindAddr)
+	// The cert-dir key needs a default so AllKeys() includes it during env
+	// binding: AutomaticEnv does not expose environment-only keys to
+	// Unmarshal, so without this the ODH_MODULE_OPERATOR_CONTROLLER_METRICS_
+	// CERT_DIR override is silently ignored.
+	v.SetDefault(KeyMetricsCertDir, "")
 	v.SetDefault(KeyHealthBindAddr, DefaultHealthBindAddr)
 	v.SetDefault(KeyLeaderElectEnabled, DefaultLeaderElectEnabled)
 	v.SetDefault(KeyLeaderElectID, DefaultLeaderElectID)

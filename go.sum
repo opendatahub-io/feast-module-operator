@@ -157,12 +157,16 @@ github.com/opencontainers/image-spec v1.1.1 h1:y0fUlFfIZhPF1W537XOLg0/fcx6zcHCJw
 github.com/opencontainers/image-spec v1.1.1/go.mod h1:qpqAh3Dmcf36wStyyWU+kCeDgrGnAve2nCC8+7h8Q0M=
 github.com/opendatahub-io/odh-platform-utilities v0.5.0 h1:uEAe6VXyJAj56RcIGg2NYyfO4rm/e38PDRgis9gXWsc=
 github.com/opendatahub-io/odh-platform-utilities v0.5.0/go.mod h1:/yYTo/gyspyobqyy67oS557D8UN9VH1IuixJgfP3qYg=
-github.com/opendatahub-io/odh-platform-utilities/framework v0.2.0 h1:m+d9t3SIGZZbFhb6JXdugN4hZWxbnI7lsM7+IgTwmB8=
-github.com/opendatahub-io/odh-platform-utilities/framework v0.2.0/go.mod h1:dbnC+EVIrhij8Crb3/digHuho2t82OdddnUjBgtaszc=
+github.com/opendatahub-io/odh-platform-utilities/framework v0.4.0 h1:kiRaMPhR9JQfjkEZeqqzENViAS7gS4Q1EdSOpGKT3q8=
+github.com/opendatahub-io/odh-platform-utilities/framework v0.4.0/go.mod h1:S6DJv3u/ei458FSrKPU4Drvm8VVxjnS+SkOrEBIOjgQ=
 github.com/opendatahub-io/opendatahub-operator/v2 v2.8.1-0.20261016183752-544f883498d3 h1:QLkhPuLN9s2aDcMYsY2ZZB3gX4xYRaUKopoQmZXnbsI=
 github.com/opendatahub-io/opendatahub-operator/v2 v2.8.1-0.20261016183752-544f883498d3/go.mod h1:TcdYb5l4OoVmO+OB7M8gMXPiGN/ZLIo5bSuBOQL7b9w=
 github.com/openshift/api v0.0.0-20261002115817-f8795cdde518 h1:m0CfIxttdj/Wu0N/uHNgj3ZCB6zQpkWhbdr6rTK1q60=
 github.com/openshift/api v0.0.0-20261002115817-f8795cdde518/go.mod h1:2oI3aXQFDjjl7l4xA9ZPSkB+l+lyfWLg7P2sWg9yEvM=
+github.com/openshift/controller-runtime-common v0.0.0-20261026124434-bdfc411d93cd h1:ryKoDx8pbVqytd/plQ5TvOeoTTC8l4akPB6O3FZULuQ=
+github.com/openshift/controller-runtime-common v0.0.0-20261026124434-bdfc411d93cd/go.mod h1:wRo2jx/+tZd6HnYYmKayArJgL3T6LLbovLr28DGukMg=
+github.com/openshift/library-go v0.0.0-20261001144932-192662696fc7 h1:PDH/v+jap31Eb4N9q+Q3X05QHIXZA4sVyr4zb/n+Cv0=
+github.com/openshift/library-go v0.0.0-20261001144932-192662696fc7/go.mod h1:k0EA2kHPdvdKgyV38lWS1u1eIgMBgrpWkCl2ei4A3ug=
 github.com/operator-framework/api v0.42.0 h1:rkc5V3zW8RxZMjePAe12jdL7Co/hwsYo1pLnkkhuR7s=
 github.com/operator-framework/api v0.42.0/go.mod h1:bMEj+wl/8tGqcGNtxt38cLUYagu9chNsbYzb/5HQaUQ=
 github.com/pb33f/ordered-map/v2 v2.3.1 h1:5319HDO0aw4DA4gzi+zv4FXU9UlSs3xGZ40wcP1nBjY=
@@ -279,6 +283,8 @@ k8s.io/apiextensions-apiserver v0.37.1 h1:7fIQG8eThDSTVYBWg/DOpI8v5wYfKCo0N8/TDM
 k8s.io/apiextensions-apiserver v0.37.1/go.mod h1:1Q3ujWwHgnhBoGsdmGORflwK1sDFmuaqH1OsMDWk2Gs=
 k8s.io/apimachinery v0.37.1 h1:hGCYyvKHCwtwMitj2vU4vYx0Z16N9GyZk9BBnz0wDAE=
 k8s.io/apimachinery v0.37.1/go.mod h1:jF84AyUi/IRIXRot5f+lm6MpxoWI+F1XgjaMmwCdTFw=
+k8s.io/apiserver v0.37.1 h1:dUsNwjsvItyVKNpC1N0AhQ0OBSiUJKfWz004vPifOe0=
+k8s.io/apiserver v0.37.1/go.mod h1:EWXW6PntGfOC2uD9GGVobnOExgFoX1z0hZo7f7Rs7Ng=
 k8s.io/client-go v0.37.1 h1:QTv/5ha4jAHtW9qxxVBkQVFBRDb4jHfFopQqqMdc+wM=
 k8s.io/client-go v0.37.1/go.mod h1:dnAPtTnCNY38Ho04D2KdY1F4IKausa9UbqaAZKl60SY=
 k8s.io/klog/v2 v2.140.0 h1:Tf+J3AH7xnUzZyVVXhTgGhEKnFqye14aadWv7bzXdzc=
