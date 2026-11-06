@@ -117,6 +117,25 @@ func TestMetricsTLSOptions(t *testing.T) {
 		require.Equal(t, []string{"h2", "http/1.1"}, resolved.NextProtos)
 	})
 
+	t.Run("TLS 1.3 with an empty cipher list keeps HTTP/2 defaults", func(t *testing.T) {
+		t.Parallel()
+
+		profile := configv1.TLSProfileSpec{MinTLSVersion: configv1.VersionTLS13}
+		options, err := metricsTLSOptions(frameworktls.LoadResult{
+			Spec:            profile,
+			AdherencePolicy: configv1.TLSAdherencePolicyStrictAllComponents,
+			Watchable:       true,
+		})
+		require.NoError(t, err)
+		resolved := &tls.Config{}
+		for _, option := range options {
+			option(resolved)
+		}
+		require.Equal(t, uint16(tls.VersionTLS13), resolved.MinVersion)
+		require.Nil(t, resolved.CipherSuites)
+		require.Equal(t, []string{"h2", "http/1.1"}, resolved.NextProtos)
+	})
+
 	t.Run("TLS 1.2 accepts IANA cipher names", func(t *testing.T) {
 		t.Parallel()
 
@@ -411,6 +430,33 @@ func TestTLSWatcherInitialAdherence(t *testing.T) {
 			require.Equal(t, tt.want, tlsWatcherInitialAdherence(tt.result))
 		})
 	}
+}
+
+func TestRegisterTLSProfileWatcherSkipsUnwatchableProfile(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, registerTLSProfileWatcher(nil, frameworktls.LoadResult{Watchable: false}))
+}
+
+func TestTLSRestartRunnable(t *testing.T) {
+	t.Parallel()
+
+	t.Run("restart signal requests manager restart", func(t *testing.T) {
+		t.Parallel()
+
+		changes := make(chan struct{}, 1)
+		changes <- struct{}{}
+
+		err := (tlsRestartRunnable{changes: changes}).Start(context.Background())
+
+		require.EqualError(t, err, "cluster TLS configuration changed, restart required")
+	})
+
+	t.Run("does not require leader election", func(t *testing.T) {
+		t.Parallel()
+
+		require.False(t, (tlsRestartRunnable{}).NeedLeaderElection())
+	})
 }
 
 func TestLoadTLSProfileValidation(t *testing.T) {

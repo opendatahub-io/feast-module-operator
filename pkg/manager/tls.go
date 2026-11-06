@@ -223,6 +223,11 @@ func isTransientTLSReadError(err error) bool {
 
 func hasAES128GCMSuite(profile configv1.TLSProfileSpec, resolved *tls.Config) bool {
 	if profile.MinTLSVersion == configv1.VersionTLS13 {
+		// TLS 1.3 suites are runtime-managed in Go and include an HTTP/2-
+		// compatible AES-128-GCM suite even when the profile cipher list is empty.
+		if len(profile.Ciphers) == 0 {
+			return true
+		}
 		for _, cipher := range profile.Ciphers {
 			if code, ok := cipherSuiteID(cipher); ok && strings.Contains(tls.CipherSuiteName(code), "AES_128_GCM") {
 				return true
