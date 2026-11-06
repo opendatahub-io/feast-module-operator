@@ -20,6 +20,8 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
+	"syscall"
 	"testing"
 
 	frameworktls "github.com/opendatahub-io/odh-platform-utilities/framework/tls"
@@ -349,6 +351,27 @@ func TestLoadTLSProfileFallbacks(t *testing.T) {
 			require.True(t, result.UsedFallback)
 			require.Equal(t, tt.wantWatchable, result.Watchable)
 			require.Equal(t, configv1.VersionTLS12, result.Spec.MinTLSVersion)
+		})
+	}
+}
+
+func TestIsTransientTLSReadError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "internal error", err: apierrors.NewInternalError(fmt.Errorf("restarting")), want: true},
+		{name: "connection refused", err: &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}, want: true},
+		{name: "forbidden", err: apierrors.NewForbidden(schema.GroupResource{Resource: "apiservers"}, "cluster", fmt.Errorf("denied"))},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, isTransientTLSReadError(tt.err))
 		})
 	}
 }

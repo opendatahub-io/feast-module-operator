@@ -21,12 +21,14 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 
 	configv1 "github.com/openshift/api/config/v1"
 	ocpcrypto "github.com/openshift/library-go/pkg/crypto"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -196,11 +198,18 @@ func strictTLSProfileSpec(profile *configv1.TLSSecurityProfile) (configv1.TLSPro
 }
 
 func isTransientTLSReadError(err error) bool {
+	var netErr net.Error
 	return errors.Is(err, context.DeadlineExceeded) ||
 		k8serrors.IsServiceUnavailable(err) ||
 		k8serrors.IsTimeout(err) ||
 		k8serrors.IsServerTimeout(err) ||
-		k8serrors.IsTooManyRequests(err)
+		k8serrors.IsTooManyRequests(err) ||
+		k8serrors.IsInternalError(err) ||
+		utilnet.IsConnectionRefused(err) ||
+		utilnet.IsConnectionReset(err) ||
+		utilnet.IsProbableEOF(err) ||
+		utilnet.IsHTTP2ConnectionLost(err) ||
+		(errors.As(err, &netErr) && netErr.Timeout())
 }
 
 func hasAES128GCMSuite(profile configv1.TLSProfileSpec, resolved *tls.Config) bool {
