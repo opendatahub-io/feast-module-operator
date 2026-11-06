@@ -95,3 +95,15 @@ func TestLoadPlatformVersionEnvOverridesMountedConfig(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(cfg.PlatformVersion).To(Equal("2.23.0"))
 }
+
+func TestLoadBindsMetricsCertDirEnv(t *testing.T) {
+	t.Setenv("ODH_MODULE_OPERATOR_CONTROLLER_METRICS_CERT_DIR", "/custom/certs")
+
+	cfg, err := LoadFromFS(nil)
+	if err != nil {
+		t.Fatalf("LoadFromFS() error = %v", err)
+	}
+	if cfg.Controller.Metrics.CertDir != "/custom/certs" {
+		t.Errorf("Controller.Metrics.CertDir = %q, want %q", cfg.Controller.Metrics.CertDir, "/custom/certs")
+	}
+}
