@@ -28,19 +28,27 @@ import (
 )
 
 func NewCommand() *cobra.Command {
+	var metricsCertPath string
 	cmd := &cobra.Command{
 		Use:   "operator",
 		Short: "Start the module operator",
-		RunE:  run,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return run(cmd, metricsCertPath)
+		},
 	}
+	cmd.Flags().StringVar(&metricsCertPath, "metrics-cert-path", "",
+		"The directory that contains the metrics server certificate.")
 
 	return cmd
 }
 
-func run(cmd *cobra.Command, _ []string) error {
+func run(cmd *cobra.Command, metricsCertPath string) error {
 	cfg, err := moduleconfig.Load()
 	if err != nil {
 		return fmt.Errorf("loading operator config: %w", err)
+	}
+	if metricsCertPath != "" {
+		cfg.Controller.Metrics.CertDir = metricsCertPath
 	}
 
 	ctrl.SetLogger(zap.New(zap.UseDevMode(false)))
