@@ -10,6 +10,15 @@ DST_MANIFESTS_DIR="${PROJECT_ROOT}/config/manifests/${COMPONENT_NAME}"
 MARKER_FILE="${DST_MANIFESTS_DIR}/.manifest-source-commit"
 DIGEST_FILE="${DST_MANIFESTS_DIR}/.manifest-content-sha256"
 
+# Pins for both platforms. The marker always records both SHAs (not only the
+# platform that was fetched) so ODH vs RHDS sync does not conflict on this file
+# when the pins match but each side last ran get-manifests with a different
+# ODH_PLATFORM_TYPE.
+ODH_REPO_URL="https://github.com/opendatahub-io/feast"
+ODH_COMMIT_SHA="41c4f6aa584a24db99792245743d33da51a8b27c"
+RHOAI_REPO_URL="https://github.com/red-hat-data-services/feast"
+RHOAI_COMMIT_SHA="a0fd2617606a6c7378d0c15de604b19f6b792784"
+
 # The commit marker records provenance; the digest detects later edits to the
 # bundled files so a stale marker cannot cause an incorrect skip.
 manifest_digest() {
@@ -31,6 +40,28 @@ print(digest.hexdigest())
 PY
 }
 
+write_source_marker() {
+    local odh_sha="$1"
+    local rhoai_sha="$2"
+    printf 'odh=%s\nrhoai=%s\n' "${odh_sha}" "${rhoai_sha}" > "${MARKER_FILE}"
+}
+
+marker_odh_sha() {
+    if [[ -f "${MARKER_FILE}" ]]; then
+        sed -n 's/^odh=//p' "${MARKER_FILE}" | tr -d '[:space:]'
+    fi
+}
+
+marker_rhoai_sha() {
+    if [[ -f "${MARKER_FILE}" ]]; then
+        # Legacy single-SHA marker (pre dual-pin format): treat as opaque.
+        if ! grep -q '^odh=' "${MARKER_FILE}" 2>/dev/null; then
+            return 0
+        fi
+        sed -n 's/^rhoai=//p' "${MARKER_FILE}" | tr -d '[:space:]'
+    fi
+}
+
 # ODH_PLATFORM_TYPE accepts the same friendly names as the Makefile
 # (odh | rhoai | managed-rhoai); the legacy value "OpenDataHub" is kept
 # for compatibility. An unset or empty value defaults to ODH.
@@ -38,13 +69,13 @@ platform_type="${ODH_PLATFORM_TYPE:-odh}"
 case "${platform_type}" in
     odh | OpenDataHub)
         echo "Downloading manifests for ODH"
-        REPO_URL="https://github.com/opendatahub-io/feast"
-        COMMIT_SHA="41c4f6aa584a24db99792245743d33da51a8b27c"
+        REPO_URL="${ODH_REPO_URL}"
+        COMMIT_SHA="${ODH_COMMIT_SHA}"
         ;;
     rhoai | managed-rhoai)
         echo "Downloading manifests for RHOAI"
-        REPO_URL="https://github.com/red-hat-data-services/feast"
-        COMMIT_SHA="a0fd2617606a6c7378d0c15de604b19f6b792784"
+        REPO_URL="${RHOAI_REPO_URL}"
+        COMMIT_SHA="${RHOAI_COMMIT_SHA}"
         ;;
     *)
         echo "invalid ODH_PLATFORM_TYPE '${platform_type}' (expected odh, OpenDataHub, rhoai, or managed-rhoai)" >&2
@@ -61,23 +92,26 @@ if [[ "${USE_LOCAL:-}" == "true" ]] && [[ -d "${PROJECT_ROOT}/../feast" ]]; then
     rm -rf "${DST_MANIFESTS_DIR}"
     mkdir -p "${DST_MANIFESTS_DIR}"
     cp -a "${PROJECT_ROOT}/../feast/${SOURCE_PATH}/." "${DST_MANIFESTS_DIR}/"
-    echo "${local_commit}" > "${DST_MANIFESTS_DIR}/.manifest-source-commit"
+    write_source_marker "${local_commit}" "${local_commit}"
     manifest_digest "${DST_MANIFESTS_DIR}" > "${DIGEST_FILE}"
     echo "Manifests copied to ${DST_MANIFESTS_DIR} (local commit: ${local_commit})"
     exit 0
 fi
 
 if [[ "${FORCE_GET_MANIFESTS:-}" != "true" && -f "${MARKER_FILE}" ]]; then
-    if [[ "$(tr -d '[:space:]' < "${MARKER_FILE}")" == "${COMMIT_SHA}" ]]; then
+    # Skip when both pins match the script and the active platform's content digest is valid.
+    if [[ "$(marker_odh_sha)" == "${ODH_COMMIT_SHA}" && "$(marker_rhoai_sha)" == "${RHOAI_COMMIT_SHA}" ]]; then
         if [[ -f "${DIGEST_FILE}" && -f "${DST_MANIFESTS_DIR}/manager/manager.yaml" \
             && "$(tr -d '[:space:]' < "${DIGEST_FILE}")" == "$(manifest_digest "${DST_MANIFESTS_DIR}")" ]]; then
-            echo "Manifests already at ${COMMIT_SHA} with verified content, skipping download"
+            echo "Manifests already at odh=${ODH_COMMIT_SHA} rhoai=${RHOAI_COMMIT_SHA} with verified content, skipping download"
             exit 0
         fi
         echo "WARNING: bundled manifest content does not match its recorded digest; re-fetching" >&2
     else
-        echo "WARNING: bundled manifests were fetched at $(cat "${MARKER_FILE}"), expected ${COMMIT_SHA}" >&2
-        echo "Re-fetching to match expected commit (set FORCE_GET_MANIFESTS=true to always refresh)"
+        echo "WARNING: bundled manifests were fetched at:" >&2
+        echo "  $(tr '\n' ' ' < "${MARKER_FILE}")" >&2
+        echo "Expected odh=${ODH_COMMIT_SHA} rhoai=${RHOAI_COMMIT_SHA}" >&2
+        echo "Re-fetching to match expected commits (set FORCE_GET_MANIFESTS=true to always refresh)"
     fi
 elif [[ "${FORCE_GET_MANIFESTS:-}" != "true" && -f "${DST_MANIFESTS_DIR}/manager/manager.yaml" ]]; then
     echo "WARNING: manifests present but no provenance marker; re-fetching to ensure correct version" >&2
@@ -117,7 +151,9 @@ git -C "${TMP_DIR}" reset -q --hard "${COMMIT_SHA}"
 rm -rf "${DST_MANIFESTS_DIR}"
 mkdir -p "${DST_MANIFESTS_DIR}"
 cp -a "${TMP_DIR}/${SOURCE_PATH}/." "${DST_MANIFESTS_DIR}/"
-echo "${COMMIT_SHA}" > "${MARKER_FILE}"
+write_source_marker "${ODH_COMMIT_SHA}" "${RHOAI_COMMIT_SHA}"
 manifest_digest "${DST_MANIFESTS_DIR}" > "${DIGEST_FILE}"
 
 echo "Manifests downloaded to ${DST_MANIFESTS_DIR}"
+echo "  fetched: ${REPO_URL}@${COMMIT_SHA}"
+echo "  marker:  odh=${ODH_COMMIT_SHA} rhoai=${RHOAI_COMMIT_SHA}"

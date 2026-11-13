@@ -192,11 +192,10 @@ HELM_EXTRA_ARGS ?=
 # Friendly platform type names, mapped to the common.Platform values the
 # operator compares against. Selects the manifests overlay (ODH vs RHOAI)
 # for both integration tests (env var) and e2e/deploys (chart extraEnvs),
-# and the manifest source repo in hack/scripts/get-manifests.sh.
+# and which feast repo get-manifests fetches. The source-commit marker always
+# records both ODH and RHOAI pins so sync does not diverge on that hash file.
 ODH_PLATFORM_TYPE ?= # odh | rhoai | managed-rhoai
 
-# Shared with hack/scripts/get-manifests.sh so a single variable drives both
-# the overlay selection and the manifest source repo.
 export ODH_PLATFORM_TYPE
 
 ifneq ($(ODH_PLATFORM_TYPE),)
