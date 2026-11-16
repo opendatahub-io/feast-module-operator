@@ -9,10 +9,11 @@ name: API contract
 # https://github.com/red-hat-data-services/api-contract-tests/blob/main/docs/releasing.md
 # before changing the pin.
 #
-# Baseline: 51114301a748ce5bf27f43228b7a819d9b929fcc, the commit of this repository
-# that the newest GA release tag ships: opendatahub-io/opendatahub-operator tag
-# v3.6.0 (2026-11-03) pins it as `main@51114301...` in manifests-config.yaml.
-# This repository has no release tags of its own (checked on 2026-11-16).
+# Baseline: 785d2a41af8f3c7d514c0bb0ebe89861b7c13c05, the commit of this repository
+# that opendatahub-io/opendatahub-operator ships: manifests-config.yaml on its main
+# branch pins it as `main@785d2a41...` (checked on 2026-11-16). That pin includes
+# the bug fixes made after the v3.6.0 code freeze; the v3.6.0 tag itself pins the
+# older 51114301... This repository has no release tags of its own.
 # Everything in the CRD at that commit must stay compatible. Moving the baseline
 # needs approval from someone other than the author of the change.
 #
@@ -32,7 +33,7 @@ jobs:
     with:
       # The canonical CRD manifest (FeastOperator).
       crd-glob: config/crd/bases/*.yaml
-      baseline-refs: 51114301a748ce5bf27f43228b7a819d9b929fcc  # pinned by opendatahub-operator tag v3.6.0
+      baseline-refs: 785d2a41af8f3c7d514c0bb0ebe89861b7c13c05  # pinned by opendatahub-operator main on 2026-11-16
       mode: enforce
 
   api-contract-coverage:
@@ -47,6 +48,6 @@ jobs:
       crd-exclude-globs: >-
         config/chart/crds/*.yaml
         config/manifests/feastoperator/crd/bases/*.yaml
-      baseline-refs: 51114301a748ce5bf27f43228b7a819d9b929fcc  # pinned by opendatahub-operator tag v3.6.0
+      baseline-refs: 785d2a41af8f3c7d514c0bb0ebe89861b7c13c05  # pinned by opendatahub-operator main on 2026-11-16
       yq-version: "4.45.1"
       mode: enforce
