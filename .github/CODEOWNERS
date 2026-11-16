@@ -1,0 +1,4 @@
+# API contract checks: the baseline, the pinned workflow ref and the exclusions
+# decide what the check protects, so changes need an owner's review.
+/.github/workflows/api-contract.yml @opendatahub-io/feast-module-operator-maintainers
+/.rhoai/ @opendatahub-io/feast-module-operator-maintainers
