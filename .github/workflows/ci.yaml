@@ -78,6 +78,38 @@ jobs:
             exit 1
           fi
 
+  verify-bundled-manifests:
+    name: Verify Bundled Manifests & RBAC
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Refresh bundled manifests and verify RBAC
+        env:
+          # Same workflow file is synced to the downstream repo; pick the
+          # manifest source per hosting: odh for midstream (opendatahub-io),
+          # rhoai for downstream (red-hat-data-services).
+          ODH_PLATFORM_TYPE: ${{ github.repository_owner == 'red-hat-data-services' && 'rhoai' || 'odh' }}
+        run: |
+          make get-manifests
+          make verify-rbac
+
+      - name: Check for uncommitted changes
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Bundled manifests or RBAC are out of date. Run the following locally, commit the result, and push again:"
+            echo "::error::  make get-manifests"
+            echo "::error::  make verify-rbac"
+            git status --porcelain
+            git diff
+            exit 1
+          fi
+
   docker-build:
     name: Docker Build
     runs-on: ubuntu-24.04
