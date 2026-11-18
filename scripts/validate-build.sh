@@ -14,6 +14,12 @@ set -euo pipefail
 #
 # Usage:
 #   scripts/validate-build.sh <static|hermetic|manifests|chart|image|all>
+#   scripts/validate-build.sh builder-go   # the Go version the builder image pins
+#   scripts/validate-build.sh target       # dockerfile/context from the PipelineRun
+#
+# The dockerfile and build context are read from the Konflux PipelineRun, not
+# hardcoded here, so the simulation cannot validate a different target from the
+# one Konflux builds.
 #
 # Environment:
 #   IMAGE                Local tag for the operator image
@@ -32,7 +38,12 @@ MODE="${1:-all}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-CONTAINERFILE="${CONTAINERFILE:-Containerfile}"
+# Set by resolve_konflux_target from .tekton/*pull-request.yaml.
+CONTAINERFILE=""
+BUILD_CONTEXT=""
+KONFLUX_DOCKERFILE=""
+KONFLUX_PATH_CONTEXT=""
+KONFLUX_TARGET=""
 CHART_DIR="${CHART_DIR:-config/chart}"
 IMAGE="${IMAGE:-quay.io/opendatahub/odh-feast-module-operator:pr-validation}"
 CONTAINER_TOOL="${CONTAINER_TOOL:-docker}"
@@ -83,16 +94,28 @@ run_helm() {
   fi
 }
 
-check_konflux_targets() {
-  info "Checking Konflux PipelineRun targets..."
-  local file found=0
+resolve_konflux_target() {
+  # Cache: downstream helpers call this repeatedly.
+  [ -n "$CONTAINERFILE" ] && return 0
 
+  local -a files=()
+  local file
   for file in .tekton/*pull-request.yaml; do
-    [ -e "$file" ] || continue
-    found=$((found + 1))
+    [ -e "$file" ] && files+=("$file")
+  done
 
-    local dockerfile path_context has_platforms
-    read -r dockerfile path_context < <(python3 - "$file" <<'PY'
+  if [ "${#files[@]}" -eq 0 ]; then
+    err "no .tekton/*pull-request.yaml found"
+    exit 1
+  fi
+  if [ "${#files[@]}" -gt 1 ]; then
+    err "found ${#files[@]} Konflux pull-request PipelineRuns; this simulator models exactly one"
+    printf '   %s\n' "${files[@]}" >&2
+    exit 1
+  fi
+  KONFLUX_TARGET="${files[0]}"
+
+  read -r KONFLUX_DOCKERFILE KONFLUX_PATH_CONTEXT < <(python3 - "$KONFLUX_TARGET" <<'PY'
 import sys, yaml
 doc = yaml.safe_load(open(sys.argv[1]))
 params = {p.get("name"): p.get("value") for p in (doc.get("spec") or {}).get("params") or []}
@@ -100,39 +123,59 @@ print(params.get("dockerfile", "-"), params.get("path-context", "-"))
 PY
 )
 
-    if [ "$dockerfile" = "-" ] || [ "$path_context" = "-" ]; then
-      err "$file is missing a dockerfile or path-context param"
-      exit 1
-    fi
+  if [ "$KONFLUX_DOCKERFILE" = "-" ] || [ "$KONFLUX_PATH_CONTEXT" = "-" ]; then
+    err "$KONFLUX_TARGET is missing a dockerfile or path-context param"
+    exit 1
+  fi
 
-    if [ ! -f "${path_context%/}/${dockerfile}" ]; then
-      err "$file points at ${path_context%/}/${dockerfile}, which does not exist"
-      exit 1
-    fi
-    pass "$file -> ${path_context%/}/${dockerfile}"
+  BUILD_CONTEXT="${KONFLUX_PATH_CONTEXT%/}"
+  [ -n "$BUILD_CONTEXT" ] || BUILD_CONTEXT="."
+  CONTAINERFILE="${BUILD_CONTEXT%/}/${KONFLUX_DOCKERFILE}"
+  CONTAINERFILE="${CONTAINERFILE#./}"
+}
 
-    has_platforms="$(python3 - "$file" <<'PY'
+check_konflux_targets() {
+  info "Checking Konflux PipelineRun targets..."
+  resolve_konflux_target
+
+  if [ ! -f "$CONTAINERFILE" ]; then
+    err "$KONFLUX_TARGET points at $CONTAINERFILE, which does not exist"
+    exit 1
+  fi
+  pass "$KONFLUX_TARGET -> $CONTAINERFILE (context $BUILD_CONTEXT)"
+
+  local has_platforms
+  has_platforms="$(python3 - "$KONFLUX_TARGET" <<'PY'
 import sys, yaml
 doc = yaml.safe_load(open(sys.argv[1]))
 params = {p.get("name") for p in (doc.get("spec") or {}).get("params") or []}
 print("yes" if "build-platforms" in params else "no")
 PY
 )"
-    if [ "$has_platforms" = "no" ]; then
-      warn "$file does not set build-platforms; the shared pipeline falls back to linux/x86_64 only."
-      warn "  A single-arch manifest list surfaces as ImagePullBackOff on ppc64le/arm64 (RHOAIENG-79767)."
-    fi
-  done
+  if [ "$has_platforms" = "no" ]; then
+    warn "$KONFLUX_TARGET does not set build-platforms; the shared pipeline falls back to linux/x86_64 only."
+    warn "  A single-arch manifest list surfaces as ImagePullBackOff on ppc64le/arm64 (RHOAIENG-79767)."
+  fi
+}
 
-  if [ "$found" -eq 0 ]; then
-    err "no .tekton/*pull-request.yaml found"
+builder_go_version() {
+  resolve_konflux_target
+  local version
+  version="$(awk '/^FROM[[:space:]]+golang:/ {
+      sub(/^FROM[[:space:]]+golang:/, "")
+      sub(/[[:space:]].*$/, "")
+      print
+      exit
+    }' "$CONTAINERFILE")"
+  if [ -z "$version" ]; then
+    err "$CONTAINERFILE has no golang builder image; cannot read the pinned Go version"
     exit 1
   fi
+  printf '%s\n' "$version"
 }
 
 check_go_inputs() {
   info "Checking Go module inputs..."
-  require_cmd go
 
   if [ ! -s go.sum ]; then
     err "go.sum is missing or empty; a hermetic build cannot verify the module set"
@@ -158,8 +201,10 @@ check_containerfile() {
   while IFS= read -r src; do
     [ -n "$src" ] || continue
     [ "$src" = "." ] && continue
-    if [ ! -e "$src" ]; then
-      err "$file copies $src, which is not in the build context"
+    # COPY sources are relative to the PipelineRun's path-context, not to the
+    # repository root.
+    if [ ! -e "${BUILD_CONTEXT%/}/${src}" ]; then
+      err "$file copies $src, which is not in the build context ($BUILD_CONTEXT)"
       exit 1
     fi
   done < <(awk '
@@ -344,19 +389,47 @@ validate_manifests() {
     return
   fi
 
-  local file
+  local file status
   for file in "${out_dir}"/*.yaml; do
-    "$KUBECONFORM_BIN" -strict -ignore-missing-schemas \
-      -kubernetes-version "$KUBERNETES_VERSION" -output json "$file" > "${file}.json" || true
+    # -verbose records skipped resources in the JSON; without it a built-in
+    # kind with no schema disappears from the report instead of being caught.
+    # A schema violation (statusInvalid) exits nonzero: that must fail the
+    # build, not be swallowed by `|| true`.
+    status=0
+    "$KUBECONFORM_BIN" -strict -verbose -ignore-missing-schemas \
+      -kubernetes-version "$KUBERNETES_VERSION" -output json "$file" \
+      > "${file}.json" 2> "${file}.err" || status=$?
+
+    if [ "$status" -ne 0 ]; then
+      err "kubeconform rejected $(basename "$file") (exit $status):"
+      if [ -s "${file}.err" ]; then
+        sed 's/^/   /' "${file}.err" >&2
+      fi
+      if [ -s "${file}.json" ]; then
+        sed 's/^/   /' "${file}.json" >&2
+      fi
+      exit 1
+    fi
+
+    if [ ! -s "${file}.json" ]; then
+      err "kubeconform produced no JSON report for $(basename "$file")"
+      exit 1
+    fi
 
     local bad
     bad="$(python3 - "${file}.json" <<'PY'
 import json, sys
+# The standalone schema bundle ships no schema for these built-in kinds, so a
+# skip is expected and is not an apiVersion/kind typo.
+EXPECTED_SKIPS = {("apiextensions.k8s.io", "CustomResourceDefinition")}
 bad = []
 for r in json.load(open(sys.argv[1])).get("resources") or []:
     if r.get("status") != "statusSkipped":
         continue
-    group = r.get("version", "").split("/")[0] if "/" in r.get("version", "") else ""
+    version = r.get("version", "")
+    group = version.split("/")[0] if "/" in version else ""
+    if (group, r.get("kind")) in EXPECTED_SKIPS:
+        continue
     if group == "" or group.endswith(".k8s.io") or group in {"apps", "batch", "policy", "autoscaling", "extensions"}:
         bad.append(f"  {r.get('kind')} ({r.get('version')})")
 print("\n".join(bad))
@@ -410,10 +483,11 @@ validate_chart() {
 }
 
 validate_image() {
+  resolve_konflux_target
   info "Building the Konflux container image with ${CONTAINER_TOOL}..."
   require_cmd "$CONTAINER_TOOL"
 
-  "$CONTAINER_TOOL" build --platform "$PLATFORM" -f "$CONTAINERFILE" -t "$IMAGE" .
+  "$CONTAINER_TOOL" build --platform "$PLATFORM" -f "$CONTAINERFILE" -t "$IMAGE" "$BUILD_CONTEXT"
 
   "$CONTAINER_TOOL" run --rm --platform "$PLATFORM" "$IMAGE" --help >/dev/null
   pass "the manager binary starts and prints usage"
@@ -442,10 +516,16 @@ case "$MODE" in
   manifests) validate_manifests ;;
   chart)     validate_chart ;;
   image)     validate_image ;;
+  builder-go) builder_go_version ;;
+  target)
+    resolve_konflux_target
+    printf 'dockerfile=%s\ncontext=%s\nbuilder_go=%s\n' \
+      "$CONTAINERFILE" "$BUILD_CONTEXT" "$(builder_go_version)"
+    ;;
   all)       validate_static; validate_hermetic; validate_manifests; validate_chart; validate_image ;;
   *)
     err "Unknown mode: $MODE"
-    echo "Usage: $0 <static|hermetic|manifests|chart|image|all>" >&2
+    echo "Usage: $0 <static|hermetic|manifests|chart|image|builder-go|target|all>" >&2
     exit 2
     ;;
 esac
