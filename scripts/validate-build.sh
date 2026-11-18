@@ -240,9 +240,12 @@ check_chart_drift() {
     make_args+=("KUSTOMIZE=$KUSTOMIZE_BIN")
   fi
 
-  if ! ( cd "$tmp/repo" && make helm ${make_args[@]+"${make_args[@]}"} >/dev/null 2>&1 ); then
-    warn "make helm failed in a clean export; skipping chart drift check"
-    return
+  # A generation failure is not a warning: it means the shipped chart cannot be
+  # verified at all, and a green job would be claiming coverage it never had.
+  if ! ( cd "$tmp/repo" && make helm ${make_args[@]+"${make_args[@]}"} > "$tmp/make.log" 2>&1 ); then
+    err "'make helm' failed in a clean export; the chart cannot be verified"
+    tail -30 "$tmp/make.log" | sed 's/^/   /'
+    exit 1
   fi
 
   if diff -r "$CHART_DIR" "$tmp/repo/$CHART_DIR" > "$tmp/diff.txt" 2>&1; then
