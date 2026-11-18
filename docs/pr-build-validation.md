@@ -13,7 +13,13 @@ Run the same checks locally with `scripts/validate-build.sh`.
 ./scripts/validate-build.sh chart       # helm render + regenerate-and-diff against `make helm`
 ./scripts/validate-build.sh image       # build the image, run it, assert the manifests ship
 ./scripts/validate-build.sh all
+./scripts/validate-build.sh target      # dockerfile + build context from the PipelineRun
+./scripts/validate-build.sh builder-go  # Go version the Containerfile's builder pins
 ```
+
+The dockerfile and build context always come from the PipelineRun params, so a
+PR that points Konflux at a different containerfile cannot pass here by
+validating `Containerfile` instead.
 
 ## What each job covers
 
