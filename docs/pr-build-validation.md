@@ -40,10 +40,21 @@ chart, so a kustomize change can ship a chart that does not contain it. That is
 the failure class behind RHOAIENG-96436 (odh-feast-operator manifests out of
 sync, an RC blocker).
 
-The drift check warns rather than fails while `main` is already drifted. The
-warning is a standing reminder; once the committed chart is regenerated the
-check can be promoted to a hard failure by removing the early `return` in
-`check_chart_drift`.
+The check fails when a pull request introduces or leaves drift. Because `main`
+itself can be behind on regeneration, the base ref is regenerated as well and
+the two sets of drifted files are compared:
+
+| Situation | Result |
+| --- | --- |
+| `config/chart` matches `make helm` | pass |
+| Drift exists, and the base ref drifts the same files | warning, pass |
+| Drift exists and the base ref does not drift the same files | fail |
+| No base ref supplied (for example a local run) | fail |
+
+The middle row is the only tolerated case, and it cannot hide a new problem: a
+kustomize change that is not regenerated produces a different set of drifted
+files from the base ref, so it fails. The warning disappears on its own once the
+committed chart is regenerated on the base branch.
 
 ## Why the RBAC subject check exists
 
