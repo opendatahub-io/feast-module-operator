@@ -18,6 +18,7 @@ Three historical failure modes motivate these:
 """
 
 import argparse
+import os
 import re
 import sys
 
@@ -38,6 +39,15 @@ def containers(document):
     for name in ("initContainers", "containers"):
         for container in pod_spec.get(name) or []:
             yield document.get("metadata", {}).get("name", "?"), container
+
+
+def pod_spec(document):
+    """The PodSpec of a workload, or None for other kinds."""
+    kind = document.get("kind")
+    if kind not in {"Deployment", "StatefulSet", "DaemonSet"}:
+        return None
+    spec = document.get("spec") or {}
+    return ((spec.get("template") or {}).get("spec") or {})
 
 
 def load(path):
@@ -69,12 +79,17 @@ def rbac_subjects(paths):
     failures = []
     for path in paths:
         documents = list(load(path))
-        service_accounts = {
-            (document.get("metadata") or {}).get("name")
-            for document in documents
-            if document.get("kind") == "ServiceAccount"
-        }
-        service_accounts.discard(None)
+        # A ServiceAccount is only unique per namespace: validation/manager and
+        # system/manager are different identities. Key on both so a binding that
+        # names the wrong namespace cannot pass on a name collision.
+        service_accounts = set()
+        for document in documents:
+            if document.get("kind") != "ServiceAccount":
+                continue
+            metadata = document.get("metadata") or {}
+            name = metadata.get("name")
+            if name:
+                service_accounts.add((metadata.get("namespace") or "", name))
         if not service_accounts:
             # Nothing to compare against; the chart may expect the platform to
             # create the identity.
@@ -82,26 +97,28 @@ def rbac_subjects(paths):
 
         for document in documents:
             kind = document.get("kind")
-            name = (document.get("metadata") or {}).get("name", "?")
+            metadata = document.get("metadata") or {}
+            name = metadata.get("name", "?")
+            namespace = metadata.get("namespace") or ""
             if kind in {"RoleBinding", "ClusterRoleBinding"}:
                 for subject in document.get("subjects") or []:
                     if subject.get("kind") != "ServiceAccount":
                         continue
                     account = subject.get("name")
-                    if account not in service_accounts:
+                    # A namespaced subject without an explicit namespace
+                    # resolves in the binding's own namespace.
+                    account_namespace = subject.get("namespace") or namespace
+                    if (account_namespace, account) not in service_accounts:
                         failures.append(
                             f"{path}: {kind}/{name} binds to ServiceAccount "
-                            f"{subject.get('namespace')}/{account}, which the chart does not create"
+                            f"{account_namespace or '<cluster>'}/{account}, which the chart does not create"
                         )
             if kind in {"Deployment", "StatefulSet", "DaemonSet"}:
-                pod_spec = (
-                    ((document.get("spec") or {}).get("template") or {}).get("spec") or {}
-                )
-                account = pod_spec.get("serviceAccountName")
-                if account and account not in service_accounts:
+                account = (pod_spec(document) or {}).get("serviceAccountName")
+                if account and (namespace, account) not in service_accounts:
                     failures.append(
-                        f"{path}: {kind}/{name} runs as ServiceAccount {account}, "
-                        "which the chart does not create"
+                        f"{path}: {kind}/{name} runs as ServiceAccount "
+                        f"{namespace or '<cluster>'}/{account}, which the chart does not create"
                     )
     return failures
 
@@ -117,35 +134,60 @@ def containerfile_manifest_dir(path):
 
 
 def chart_manifest_paths(path):
-    """(copy source dir, copy destination dir, MANIFESTS_PATH env value)."""
+    """(copy source, copy destination, MANIFESTS_PATH value, manager found)."""
     source = destination = env_value = None
+    manager_found = False
     for document in load(path):
-        for _, container in containers(document):
-            argv = list(container.get("command") or []) + list(container.get("args") or [])
-            for index, token in enumerate(argv):
-                if token != "cp":
-                    continue
-                operands = [t for t in argv[index + 1 :] if not t.startswith("-")]
-                pair = operands[:2]
-                if len(pair) == 2 and pair[0].endswith("/.") and pair[1].startswith("/"):
-                    source, destination = pair[0][:-2].rstrip("/"), pair[1].rstrip("/")
+        spec = pod_spec(document)
+        if spec is None:
+            continue
+
+        # The operator's configuration is the manager container's. A sidecar
+        # that also sets the variable does not change what the operator reads.
+        for container in spec.get("containers") or []:
+            if container.get("name") != "manager":
+                continue
+            manager_found = True
             for entry in container.get("env") or []:
                 if entry.get("name") == "ODH_MODULE_OPERATOR_MANIFESTS_PATH":
                     env_value = entry.get("value")
-    return source, destination, env_value
+
+        # Only the copy-manifests init container populates the volume. `cp`
+        # must be the executable: `command: [echo]` with "cp" in args copies
+        # nothing even though it mentions every path.
+        init_containers = spec.get("initContainers") or []
+        copier = next(
+            (c for c in init_containers if c.get("name") == "copy-manifests"),
+            init_containers[0] if init_containers else None,
+        )
+        if copier is None:
+            continue
+        argv = list(copier.get("command") or []) + list(copier.get("args") or [])
+        if not argv or os.path.basename(argv[0]) != "cp":
+            continue
+        operands = [arg for arg in argv[1:] if not arg.startswith("-")]
+        pair = operands[:2]
+        if len(pair) == 2 and pair[0].endswith("/.") and pair[1].startswith("/"):
+            source, destination = pair[0][:-2].rstrip("/"), pair[1].rstrip("/")
+    return source, destination, env_value, manager_found
 
 
 def manifest_path_contract(containerfile, chart_deployment):
     image_dir = containerfile_manifest_dir(containerfile)
-    source, destination, env_value = chart_manifest_paths(chart_deployment)
+    source, destination, env_value, manager_found = chart_manifest_paths(chart_deployment)
 
     problems = []
     if not image_dir:
         problems.append(f"{containerfile}: no COPY of config/manifests/ into an absolute path")
     if not source or not destination:
         problems.append(f"{chart_deployment}: no 'cp -r <dir>/. <dir>/' init container found")
-    if not env_value:
-        problems.append(f"{chart_deployment}: ODH_MODULE_OPERATOR_MANIFESTS_PATH not set")
+    if not manager_found:
+        problems.append(f"{chart_deployment}: no container named manager in a Deployment")
+    elif not env_value:
+        problems.append(
+            f"{chart_deployment}: the manager container does not set "
+            "ODH_MODULE_OPERATOR_MANIFESTS_PATH"
+        )
 
     if not problems:
         if source != image_dir:

@@ -46,6 +46,12 @@ env:
   SIM_HELM_VERSION: '4.2.0'
   SIM_KUBECONFORM_VERSION: '0.7.0'
   SIM_KUBERNETES_VERSION: '1.31.0'
+  # SHA-256 of the linux-amd64 release archives for the versions above, taken
+  # from each project's published checksum file. A download that does not match
+  # fails closed before anything is extracted or installed (CWE-494/CWE-829).
+  SIM_HELM_SHA256: '97dbeb971be4ac4b27e3839976d9564c0fb35c6f3b1da89dd1e292d236af4096'
+  SIM_KUSTOMIZE_SHA256: '029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d'
+  SIM_KUBECONFORM_SHA256: 'c31518ddd122663b3f3aa874cfe8178cb0988de944f29c74a0b9260920d115d3'
 
 jobs:
   check-skip:
@@ -72,7 +78,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
-          RELEVANT='^(api/|cmd/|internal/|pkg/|config/|hack/|Containerfile|Makefile|go\.(mod|sum)|\.tekton/|scripts/(validate-build\.sh|manifest_contract\.py)|\.github/workflows/pr-build-validation\.yml)'
+          RELEVANT='^(api/|cmd/|internal/|pkg/|config/|hack/|Containerfile|Makefile|go\.(mod|sum)|\.dockerignore|\.tekton/|scripts/(validate-build\.sh|manifest_contract\.py)|\.github/workflows/pr-build-validation\.yml)'
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -118,6 +124,7 @@ jobs:
           set -euo pipefail
           curl -fsSL -o /tmp/helm.tar.gz \
             "https://get.helm.sh/helm-v${SIM_HELM_VERSION}-linux-amd64.tar.gz"
+          printf '%s  %s\n' "$SIM_HELM_SHA256" /tmp/helm.tar.gz | sha256sum --check --strict
           tar -xzf /tmp/helm.tar.gz -C /tmp
           sudo install -m 0755 "/tmp/linux-amd64/helm" /usr/local/bin/helm
           helm version --short
@@ -147,20 +154,43 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install PyYAML
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --user pyyaml \
+            || sudo apt-get install -y python3-yaml
+
+      - name: Read the Go version pinned by the builder image
+        id: builder
+        run: |
+          set -euo pipefail
+          version="$(./scripts/validate-build.sh builder-go)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "The Konflux Containerfile builds with go${version}"
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          # The builder image's version, not go.mod's `go` directive: the
+          # preflight must prove that this toolchain compiles the module set.
+          go-version: ${{ steps.builder.outputs.version }}
           cache: false
 
       - name: Prove the module set builds without network
-        # GOTOOLCHAIN=local: if go.mod needs a newer Go than the one installed,
-        # fail here instead of downloading a toolchain mid-build. Konflux builds
-        # inside a pinned builder image and cannot do that either.
+        # GOTOOLCHAIN=local plus the equality check means a go.mod that demands
+        # a newer toolchain fails here instead of downloading one mid-build,
+        # which the pinned Konflux builder cannot do either.
         env:
           GOTOOLCHAIN: local
+          BUILDER_GO_VERSION: ${{ steps.builder.outputs.version }}
         run: |
           set -euo pipefail
+          actual="$(go env GOVERSION)"
+          echo "runner toolchain: ${actual}"
+          if [ "$actual" != "go${BUILDER_GO_VERSION}" ]; then
+            echo "::error::runner toolchain ${actual} does not match the builder image golang:${BUILDER_GO_VERSION}"
+            exit 1
+          fi
           ./scripts/validate-build.sh hermetic
 
   manifest-validation:
@@ -185,11 +215,13 @@ jobs:
           set -euo pipefail
           curl -fsSL -o /tmp/kustomize.tar.gz \
             "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${SIM_KUSTOMIZE_VERSION}/kustomize_v${SIM_KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "$SIM_KUSTOMIZE_SHA256" /tmp/kustomize.tar.gz | sha256sum --check --strict
           tar -xzf /tmp/kustomize.tar.gz -C /tmp
           sudo install -m 0755 /tmp/kustomize /usr/local/bin/kustomize
 
           curl -fsSL -o /tmp/kubeconform.tar.gz \
             "https://github.com/yannh/kubeconform/releases/download/v${SIM_KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          printf '%s  %s\n' "$SIM_KUBECONFORM_SHA256" /tmp/kubeconform.tar.gz | sha256sum --check --strict
           tar -xzf /tmp/kubeconform.tar.gz -C /tmp
           sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
 
@@ -234,6 +266,7 @@ jobs:
           set -euo pipefail
           curl -fsSL -o /tmp/helm.tar.gz \
             "https://get.helm.sh/helm-v${SIM_HELM_VERSION}-linux-amd64.tar.gz"
+          printf '%s  %s\n' "$SIM_HELM_SHA256" /tmp/helm.tar.gz | sha256sum --check --strict
           tar -xzf /tmp/helm.tar.gz -C /tmp
           sudo install -m 0755 "/tmp/linux-amd64/helm" /usr/local/bin/helm
           helm version --short
@@ -285,6 +318,12 @@ jobs:
           set -euo pipefail
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
+
+      - name: Install PyYAML
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --user pyyaml \
+            || sudo apt-get install -y python3-yaml
 
       - name: Build and inspect the image
         run: |
