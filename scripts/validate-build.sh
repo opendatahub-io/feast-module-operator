@@ -31,6 +31,9 @@ set -euo pipefail
 #   KUSTOMIZE_BIN        Prebuilt kustomize binary (skips the `go run` fallback)
 #   KUBECONFORM_BIN      kubeconform binary (default kubeconform)
 #   KUBERNETES_VERSION   Kubernetes schema version for kubeconform
+#   CHART_DRIFT_BASE_REF Base ref used to tell pre-existing drift from drift a
+#                        PR introduces (for example origin/main). Without it any
+#                        drift fails, which is the safe default.
 #   SKIP_CHART_DRIFT=1   Skip the regenerate-and-compare step
 #   SKIP_IMAGE=1         Skip the image build
 
@@ -265,17 +268,24 @@ check_manifest_path_contract() {
   pass "manifest path contract holds"
 }
 
-check_chart_drift() {
-  info "Checking whether config/chart matches 'make helm' output..."
+# regenerate_chart <dest> <ref> <label> <tmp>
+#
+# Exports <ref> into <dest>, keeps a copy of the committed chart, and rebuilds
+# it with `make helm`. Returns non-zero when the ref cannot be generated.
+regenerate_chart() {
+  local dest="$1" ref="$2" label="$3" tmp="$4"
 
-  local tmp
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "${tmp:-}"' RETURN
-  mkdir -p "$tmp/repo"
+  mkdir -p "$dest"
 
-  if ! git archive HEAD | tar -x -C "$tmp/repo"; then
-    warn "could not export HEAD; skipping chart drift check"
-    return
+  if ! git archive "$ref" | tar -x -C "$dest"; then
+    err "could not export $ref"
+    return 1
+  fi
+
+  if [ -d "$dest/$CHART_DIR" ]; then
+    cp -R "$dest/$CHART_DIR" "$tmp/$label-committed"
+  else
+    mkdir -p "$tmp/$label-committed"
   fi
 
   # Reuse a prebuilt kustomize when one was supplied; otherwise `make helm`
@@ -287,21 +297,86 @@ check_chart_drift() {
 
   # A generation failure is not a warning: it means the shipped chart cannot be
   # verified at all, and a green job would be claiming coverage it never had.
-  if ! ( cd "$tmp/repo" && make helm ${make_args[@]+"${make_args[@]}"} > "$tmp/make.log" 2>&1 ); then
-    err "'make helm' failed in a clean export; the chart cannot be verified"
-    tail -30 "$tmp/make.log" | sed 's/^/   /'
-    exit 1
+  if ! ( cd "$dest" && make helm ${make_args[@]+"${make_args[@]}"} > "$tmp/make-$label.log" 2>&1 ); then
+    err "'make helm' failed on $ref; the chart cannot be verified"
+    tail -30 "$tmp/make-$label.log" | sed 's/^/   /'
+    return 1
+  fi
+}
+
+# chart_drift_files <committed> <generated> <report>
+#
+# Writes a content diff to <report> and echoes the sorted list of chart-relative
+# files that differ. The list is derived from checksum manifests rather than the
+# diff text, so it can be compared between two runs without parsing YAML.
+chart_drift_files() {
+  local committed="${1%/}" generated="${2%/}" report="$3"
+  local scratch="${report}.manifest"
+
+  diff -r "$committed" "$generated" > "$report" 2>&1 || true
+
+  ( cd "$committed" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum ) \
+    | sed 's|  \./|  |' > "$scratch.committed"
+  ( cd "$generated" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum ) \
+    | sed 's|  \./|  |' > "$scratch.generated"
+
+  diff "$scratch.committed" "$scratch.generated" 2>/dev/null \
+    | awk '/^[<>] /{sub(/^[<>] [0-9a-f]+  /,""); print}' | sort -u
+}
+
+check_chart_drift() {
+  local tmp
+  tmp="$(mktemp -d)"
+
+  # Cleanup is explicit: a RETURN trap would fire when the helper functions
+  # below return and remove the working directory underneath them.
+  local rc=0
+  run_chart_drift "$tmp" || rc=$?
+  rm -rf "$tmp"
+
+  return "$rc"
+}
+
+run_chart_drift() {
+  local tmp="$1"
+
+  info "Checking whether config/chart matches 'make helm' output..."
+
+  if ! regenerate_chart "$tmp/head" HEAD head "$tmp"; then
+    return 1
   fi
 
-  if diff -r "$CHART_DIR" "$tmp/repo/$CHART_DIR" > "$tmp/diff.txt" 2>&1; then
+  local head_drift
+  head_drift="$(chart_drift_files "$CHART_DIR" "$tmp/head/$CHART_DIR" "$tmp/head.diff")"
+
+  if [ -z "$head_drift" ]; then
     pass "config/chart matches the generated output"
-  else
-    warn "config/chart does not match 'make helm' output on HEAD:"
-    head -20 "$tmp/diff.txt" | sed 's/^/   /'
-    warn "  config/chart is what manifests-config.yaml consumes (sourcePath: config/chart)."
-    warn "  Nothing else in CI regenerates it — 'Verify Generated Files' runs manifests+generate only (RHOAIENG-96436)."
-    warn "  Not fatal here on purpose: this drift already exists on main, so a hard failure would block every PR."
+    return 0
   fi
+
+  # Drift on HEAD is not automatically this PR's fault: the repository can be
+  # behind on regeneration. Regenerate the base ref as well and compare the two
+  # sets of drifted files. Anything the base does not also drift is introduced
+  # here, and that fails.
+  local base_ref="${CHART_DRIFT_BASE_REF:-}"
+  if [ -n "$base_ref" ] && regenerate_chart "$tmp/base" "$base_ref" base "$tmp"; then
+    local base_drift
+    base_drift="$(chart_drift_files "$tmp/base-committed" "$tmp/base/$CHART_DIR" "$tmp/base.diff")"
+
+    if [ -n "$base_drift" ] && [ "$head_drift" = "$base_drift" ]; then
+      warn "config/chart already does not match 'make helm' output on $base_ref; this PR adds no drift:"
+      head -20 "$tmp/head.diff" | sed 's/^/   /'
+      warn "  config/chart is what manifests-config.yaml consumes (sourcePath: config/chart)."
+      warn "  Tracked separately; this check fails as soon as $base_ref is clean again."
+      return 0
+    fi
+  fi
+
+  err "config/chart does not match 'make helm' output:"
+  head -30 "$tmp/head.diff" | sed 's/^/   /'
+  err "  config/chart is what manifests-config.yaml consumes (sourcePath: config/chart)."
+  err "  Nothing else regenerates it; run 'make helm' and commit the result."
+  return 1
 }
 
 validate_static() {

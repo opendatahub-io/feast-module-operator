@@ -252,6 +252,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The base ref is regenerated too, so drift that already exists on the
+          # base branch can be told apart from drift this PR introduces.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -295,6 +298,7 @@ jobs:
           # Makefile's `go run` and keeps the step independent of the module
           # proxy.
           KUSTOMIZE_BIN: /usr/local/bin/kustomize
+          CHART_DRIFT_BASE_REF: origin/${{ github.base_ref }}
         run: |
           set -euo pipefail
           ./scripts/validate-build.sh chart
