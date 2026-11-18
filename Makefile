@@ -224,7 +224,7 @@ endif
 .PHONY: helm
 helm: manifests generate ## Generate Helm chart from kustomize output.
 	rm -rf config/chart
-	$(KUSTOMIZE) build config/default | go run ./cmd/main.go chartgen --output config/chart --image $(HELM_IMAGE)
+	$(KUSTOMIZE) build config/default | go run ./cmd/main.go chartgen --output config/chart --image "$(HELM_IMAGE)"
 
 .PHONY: helm-status
 helm-status: ## Show Helm release status.

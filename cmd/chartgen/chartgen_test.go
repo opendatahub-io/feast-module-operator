@@ -65,6 +65,9 @@ func TestRunGeneratesUpgradeGates(t *testing.T) {
 	if !strings.Contains(gates, "feastoperator-upgrade-gates") {
 		t.Errorf("upgrade-gates.yaml is missing the ConfigMap name:\n%s", gates)
 	}
+	if !strings.Contains(gates, "namespace: {{ default .Release.Namespace .Values.namespace }}") {
+		t.Errorf("upgrade-gates.yaml is missing the chart namespace:\n%s", gates)
+	}
 }
 
 // TestRunImageFlagOverridesDeployment verifies that the published image used by
@@ -103,5 +106,36 @@ func TestRunTemplatesNetworkPolicyNamespace(t *testing.T) {
 	policy := readFile(t, filepath.Join(out, templatesDirName, "networking.k8s.io_v1_networkpolicy.yaml"))
 	if !strings.Contains(policy, "{{ default .Release.Namespace .Values.namespace }}") {
 		t.Errorf("NetworkPolicy namespace is not templated:\n%s", policy)
+	}
+}
+
+// TestImageSpecForDigest keeps a digest reference whole, because splitting it
+// would let an image.tag override render a tag after "@sha256".
+func TestImageSpecForDigest(t *testing.T) {
+	spec := imageSpecFor("registry.example/manager@sha256:" + strings.Repeat("a", 64))
+
+	if spec.FullRef == "" {
+		t.Fatalf("digest reference was not stored in fullRef: %+v", spec)
+	}
+	if spec.Repository != "registry.example/manager" {
+		t.Errorf("repository = %q, want registry.example/manager", spec.Repository)
+	}
+	if spec.Tag != "" {
+		t.Errorf("tag = %q, want empty", spec.Tag)
+	}
+}
+
+// TestImageSpecForTag keeps the repository and tag split for tagged references.
+func TestImageSpecForTag(t *testing.T) {
+	spec := imageSpecFor("quay.io/opendatahub/odh-feast-module-operator:odh-stable")
+
+	if spec.FullRef != "" {
+		t.Errorf("fullRef = %q, want empty", spec.FullRef)
+	}
+	if spec.Repository != "quay.io/opendatahub/odh-feast-module-operator" {
+		t.Errorf("repository = %q", spec.Repository)
+	}
+	if spec.Tag != "odh-stable" {
+		t.Errorf("tag = %q, want odh-stable", spec.Tag)
 	}
 }

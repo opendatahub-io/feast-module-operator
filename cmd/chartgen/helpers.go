@@ -85,11 +85,12 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: feastoperator-upgrade-gates
+  namespace: {{ default .Release.Namespace .Values.namespace }}
   labels:
     platform.opendatahub.io/upgrade-gate: "true"
 data:
   {{- range $key, $val := .Values.upgradeGates }}
-  {{ $key }}: {{ $val | quote }}
+  {{ $key | quote }}: {{ $val | quote }}
   {{- end }}
 {{- end }}
 `

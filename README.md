@@ -67,6 +67,20 @@ make container-build IMG=quay.io/opendatahub/feast-module-operator:dev
 make helm
 ```
 
+`config/chart` is committed because `opendatahub-operator` consumes it through
+`manifests-config.yaml`. It is rendered and applied by the platform; it is not
+installed with `helm install`.
+
+If you do install it with Helm, use a namespace Helm owns. The chart uses the
+same object names as `kustomize build config/default`, so a namespace that was
+previously populated with `kubectl apply -k config/default` already holds the
+NetworkPolicies without Helm ownership metadata, and Helm refuses to adopt them.
+Remove them first:
+
+```bash
+kubectl -n <namespace> delete networkpolicy allow-egress allow-metrics-traffic
+```
+
 ## Architecture
 
 ### Reconciliation Flow

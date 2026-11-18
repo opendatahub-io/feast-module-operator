@@ -94,8 +94,7 @@ func run(
 	// Extract defaults from the Deployment resource
 	values := ExtractDefaults(resources)
 	if image != "" {
-		parts := splitImageTag(image)
-		values.Image = ImageSpec{Repository: parts[0], Tag: parts[1]}
+		values.Image = imageSpecFor(image)
 	}
 
 	// Create output directories
