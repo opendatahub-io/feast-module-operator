@@ -356,23 +356,45 @@ run_chart_drift() {
 
   # Drift on HEAD is not automatically this PR's fault: the repository can be
   # behind on regeneration. Regenerate the base ref as well and compare the two
-  # sets of drifted files. Anything the base does not also drift is introduced
-  # here, and that fails.
+  # sets of drifted files. Only files this PR starts to drift are its fault.
+  #
+  # The comparison is a set difference, not string equality: a PR that
+  # regenerates one of several stale files reduces the drift set, and that is
+  # an improvement, not a regression.
+  #
+  # Residual gap: a file that is already stale on the base ref stays tolerated
+  # even if this PR makes its drift worse. That is bounded by the base ref
+  # being cleaned up (see the follow-up), and it is still strictly better than
+  # blocking every PR on drift the repository already shipped.
   local base_ref="${CHART_DRIFT_BASE_REF:-}"
-  if [ -n "$base_ref" ] && regenerate_chart "$tmp/base" "$base_ref" base "$tmp"; then
-    local base_drift
-    base_drift="$(chart_drift_files "$tmp/base-committed" "$tmp/base/$CHART_DIR" "$tmp/base.diff")"
+  if [ -z "$base_ref" ]; then
+    err "CHART_DRIFT_BASE_REF is not set, so pre-existing drift cannot be told apart from drift this PR adds"
+    head -30 "$tmp/head.diff" | sed 's/^/   /'
+    err "  Set CHART_DRIFT_BASE_REF=<base ref> or run 'make helm' and commit the result."
+    return 1
+  fi
 
-    if [ -n "$base_drift" ] && [ "$head_drift" = "$base_drift" ]; then
-      warn "config/chart already does not match 'make helm' output on $base_ref; this PR adds no drift:"
-      head -20 "$tmp/head.diff" | sed 's/^/   /'
-      warn "  config/chart is what manifests-config.yaml consumes (sourcePath: config/chart)."
-      warn "  Tracked separately; this check fails as soon as $base_ref is clean again."
-      return 0
-    fi
+  if ! regenerate_chart "$tmp/base" "$base_ref" base "$tmp"; then
+    err "could not regenerate $base_ref, so drift on HEAD cannot be attributed to this PR"
+    return 1
+  fi
+
+  local base_drift
+  base_drift="$(chart_drift_files "$tmp/base-committed" "$tmp/base/$CHART_DIR" "$tmp/base.diff")"
+
+  local added_drift
+  added_drift="$(LC_ALL=C comm -23 <(printf '%s\n' "$head_drift") <(printf '%s\n' "$base_drift"))"
+
+  if [ -z "$added_drift" ]; then
+    warn "config/chart already does not match 'make helm' output on $base_ref; this PR adds no drift:"
+    printf '%s\n' "$head_drift" | sed 's/^/   tolerated (already stale on '"$base_ref"'): /'
+    warn "  config/chart is what manifests-config.yaml consumes (sourcePath: config/chart)."
+    warn "  Tracked separately; this check fails as soon as $base_ref is clean again."
+    return 0
   fi
 
   err "config/chart does not match 'make helm' output:"
+  printf '%s\n' "$added_drift" | sed 's/^/   new drift: /'
   head -30 "$tmp/head.diff" | sed 's/^/   /'
   err "  config/chart is what manifests-config.yaml consumes (sourcePath: config/chart)."
   err "  Nothing else regenerates it; run 'make helm' and commit the result."
