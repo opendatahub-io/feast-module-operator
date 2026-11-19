@@ -22,6 +22,11 @@ go run helm.sh/helm/v4/cmd/helm@v4.2.0 uninstall "${HELM_RELEASE}" \
 
 # Delete namespace
 kubectl delete namespace "${NAMESPACE}" --ignore-not-found 2>/dev/null || true
+# `delete` returns as soon as the deletion is accepted, leaving the namespace
+# Terminating. The next platform's setup then creates its Secret and ConfigMap
+# into a namespace that still has finalizers, and `set -e` fails that run.
+# `kubectl wait --for=delete` returns immediately when it is already gone.
+kubectl wait --for=delete "namespace/${NAMESPACE}" --timeout=120s 2>/dev/null || true
 
 # Delete any leftover cluster-scoped resources
 kubectl delete clusterroles -l platform.opendatahub.io/part-of=feastoperator --ignore-not-found 2>/dev/null || true

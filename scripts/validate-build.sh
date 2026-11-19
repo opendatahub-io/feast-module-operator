@@ -337,17 +337,21 @@ regenerate_chart() {
 # diff text, so it can be compared between two runs without parsing YAML.
 chart_drift_files() {
   local committed="${1%/}" generated="${2%/}" report="$3"
-  local scratch="${report}.manifest"
+  local rel
 
   diff -r "$committed" "$generated" > "$report" 2>&1 || true
 
-  ( cd "$committed" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum ) \
-    | sed 's|  \./|  |' > "$scratch.committed"
-  ( cd "$generated" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum ) \
-    | sed 's|  \./|  |' > "$scratch.generated"
-
-  diff "$scratch.committed" "$scratch.generated" 2>/dev/null \
-    | awk '/^[<>] /{sub(/^[<>] [0-9a-f]+  /,""); print}' | sort -u
+  # Compare content directly. A checksum manifest made the result depend on
+  # sha256sum being installed (xargs exits 127 without it, both manifests come
+  # out empty, nothing differs and real drift passes) and on how the tool
+  # behaves on an empty directory.
+  {
+    ( cd "$committed" && find . -type f )
+    ( cd "$generated" && find . -type f )
+  } | LC_ALL=C sort -u | while IFS= read -r rel; do
+    # A file present on one side only is drift, which cmp reports.
+    cmp -s "$committed/$rel" "$generated/$rel" || printf '%s\n' "${rel#./}"
+  done
 }
 
 check_chart_drift() {
@@ -649,6 +653,10 @@ validate_image() {
 E2E_CLUSTER_NAME="${E2E_CLUSTER_NAME:-konflux-sim}"
 E2E_REGISTRY_NAME="${E2E_REGISTRY_NAME:-konflux-sim-registry}"
 E2E_REGISTRY_PORT="${E2E_REGISTRY_PORT:-5001}"
+# Pinned by digest: this container runs with container-engine access on the
+# runner, and it is the one unpinned artifact left in the e2e path next to a
+# CRD bundle that is already checksum-pinned. Bump it by reviewed change.
+E2E_REGISTRY_IMAGE="${E2E_REGISTRY_IMAGE:-registry:3@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c}"
 E2E_PLATFORMS="${E2E_PLATFORMS:-odh rhoai}"
 E2E_NAMESPACE="${E2E_NAMESPACE:-opendatahub-feast-system}"
 E2E_SERVICEMONITOR_CRDS="${E2E_SERVICEMONITOR_CRDS:-https://github.com/prometheus-operator/prometheus-operator/releases/download/v0.80.1/stripped-down-crds.yaml}"
@@ -666,14 +674,19 @@ e2e_teardown() {
 e2e_dump_diagnostics() {
   local platform="$1"
   warn "diagnostics for ODH_PLATFORM_TYPE=${platform} (best effort):"
-  {
+  # `set -e` and pipefail are active in this shell. Without relaxing them the
+  # first kubectl that fails (missing CRD, no previous container to log) exits
+  # the group and skips every later command, which is the opposite of best
+  # effort.
+  (
+    set +e +o pipefail
     kubectl get feastoperator -A -o yaml 2>&1 | head -60
     kubectl get deploy,svc,sa,cm -n "$E2E_NAMESPACE" -o wide 2>&1
     kubectl get events -n "$E2E_NAMESPACE" --sort-by=.lastTimestamp 2>&1 | tail -30
     kubectl logs -n "$E2E_NAMESPACE" -l control-plane=controller-manager --tail=80 2>&1
     kubectl logs -n "$E2E_NAMESPACE" -l control-plane=controller-manager --tail=80 --previous 2>&1
     kubectl -n "$E2E_NAMESPACE" describe pod -l control-plane=controller-manager 2>&1 | tail -40
-  } | sed 's/^/   /'
+  ) | sed 's/^/   /' || true
 }
 
 validate_e2e() {
@@ -699,7 +712,7 @@ validate_e2e() {
   info "Starting the local registry on 127.0.0.1:${E2E_REGISTRY_PORT}..."
   "$CONTAINER_TOOL" rm -f "$E2E_REGISTRY_NAME" >/dev/null 2>&1 || true
   "$CONTAINER_TOOL" run -d --name "$E2E_REGISTRY_NAME" \
-    -p "127.0.0.1:${E2E_REGISTRY_PORT}:5000" registry:3 >/dev/null
+    -p "127.0.0.1:${E2E_REGISTRY_PORT}:5000" "$E2E_REGISTRY_IMAGE" >/dev/null
 
   local kind_config
   kind_config="$(mktemp)"
