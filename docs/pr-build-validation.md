@@ -51,10 +51,28 @@ the two sets of drifted files are compared:
 | Drift exists and the base ref does not drift the same files | fail |
 | No base ref supplied (for example a local run) | fail |
 
-The middle row is the only tolerated case, and it cannot hide a new problem: a
-kustomize change that is not regenerated produces a different set of drifted
-files from the base ref, so it fails. The warning disappears on its own once the
-committed chart is regenerated on the base branch.
+The middle row is the only tolerated case, and it is a subset rule: the check
+compares the *names* of the drifted files, not the size of the drift. A pull
+request that adds drift to a file the base ref already drifts on passes,
+because that file name is already in the tolerated set. What it cannot do is
+push drift into a file that is clean on the base ref. The warning disappears on
+its own once the committed chart is regenerated on the base branch.
+
+## Operator e2e
+
+`operator-e2e` is the only check that runs the operator. It builds the image
+this pull request produces, deploys it to a throwaway Kind cluster, applies a
+`FeatureStore` and runs the repository's own suite against it, so a
+container-level break that leaves every static check green still fails here.
+
+`ODH_PLATFORM_TYPE` selects a different overlay (namespace,
+`RELATED_IMAGE_CRON_JOB`, the rbac-proxy image, and `prometheus` plus a
+`ServiceMonitor` on `rhoai`), so the job is a `fail-fast: false` matrix with one
+leg per platform. The `rhoai` leg runs but is non-blocking until
+[opendatahub-io/feast#312](https://github.com/opendatahub-io/feast/pull/312)
+lands and the vendored manifest pin moves; it is red because the overlay passes
+`--metrics-cert-path` to a pinned `quay.io/feastdev/feast-operator` image that
+does not define the flag.
 
 ## Why the RBAC subject check exists
 
@@ -72,10 +90,10 @@ RHOAIENG-100515 (Data module NotReady, DSC never Ready) and RHOAIENG-99631
 - **Downstream fork sync.** The `red-hat-data-services` fork is synced
   separately; this workflow only compares the chart against the sources in this
   repository.
-- **Reconcile behaviour.** RHOAIENG-101993 (the reconciler crashing with
-  `is not a WithReleases` after an `odh-platform-utilities` bump) is only
-  reachable by running the operator. `make test-e2e` and `make test-integration`
-  exist but no workflow runs them.
+- **Reconcile behaviour beyond what the suite asserts.** RHOAIENG-101993 (the
+  reconciler crashing with `is not a WithReleases` after an
+  `odh-platform-utilities` bump) is covered by `operator-e2e` above.
+  `make test-integration` still has no workflow.
 - **Multi-architecture images.** The PipelineRun does not set
   `build-platforms`, so the shared pipeline produces `linux/x86_64` only.
   RHOAIENG-79767 was an `ImagePullBackOff` on ppc64le for exactly this reason.
