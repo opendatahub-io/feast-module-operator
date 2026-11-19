@@ -742,8 +742,26 @@ YAML
   # Server-side apply: these CRDs exceed the 256 KiB client-side apply limit.
   kubectl apply --server-side -f "$crd_bundle" >/dev/null
   rm -f "$crd_bundle"
-  kubectl wait --for=condition=Established --timeout=120s \
-    crd/servicemonitors.monitoring.coreos.com >/dev/null
+
+  # `kubectl wait --for=condition` reads .status.conditions directly and dies
+  # with "accessor error: <nil> is of the type <nil>" when the API server has
+  # not written status yet, which a freshly applied CRD often has not. Poll the
+  # condition instead of depending on that timing.
+  local established
+  established=""
+  for _ in $(seq 1 60); do
+    established="$(kubectl get crd servicemonitors.monitoring.coreos.com \
+      -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || true)"
+    if [ "$established" = "True" ]; then
+      break
+    fi
+    sleep 2
+  done
+  if [ "$established" != "True" ]; then
+    err "the ServiceMonitor CRD did not become Established"
+    return 1
+  fi
+  pass "ServiceMonitor CRD is established"
 
   local image_ref
   image_ref="localhost:${E2E_REGISTRY_PORT}/konflux-sim/feast-module-operator:$(git rev-parse --short=12 HEAD)"
