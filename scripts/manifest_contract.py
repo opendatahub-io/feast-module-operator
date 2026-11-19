@@ -134,14 +134,21 @@ def containerfile_manifest_dir(path):
 
 
 def chart_manifest_paths(path):
-    """(copy source, copy destination, MANIFESTS_PATH value, manager found)."""
-    source = destination = env_value = None
-    manager_found = False
+    """One (deployment, copy source, copy destination, MANIFESTS_PATH) tuple.
+
+    A tuple per Deployment, not one shared set of variables. Overwriting a
+    single set meant only the last Deployment reached the contract, so a second
+    Deployment could hide a wrong path in the first - the RHOAIENG-99568
+    failure class this check exists to catch.
+    """
+    found = []
     for document in load(path):
         spec = pod_spec(document)
         if spec is None:
             continue
 
+        manager_found = False
+        env_value = None
         # The operator's configuration is the manager container's. A sidecar
         # that also sets the variable does not change what the operator reads.
         for container in spec.get("containers") or []:
@@ -152,6 +159,10 @@ def chart_manifest_paths(path):
                 if entry.get("name") == "ODH_MODULE_OPERATOR_MANIFESTS_PATH":
                     env_value = entry.get("value")
 
+        if not manager_found:
+            continue
+
+        source = destination = None
         # Only the copy-manifests init container populates the volume. `cp`
         # must be the executable: `command: [echo]` with "cp" in args copies
         # nothing even though it mentions every path.
@@ -160,46 +171,50 @@ def chart_manifest_paths(path):
             (c for c in init_containers if c.get("name") == "copy-manifests"),
             init_containers[0] if init_containers else None,
         )
-        if copier is None:
-            continue
-        argv = list(copier.get("command") or []) + list(copier.get("args") or [])
-        if not argv or os.path.basename(argv[0]) != "cp":
-            continue
-        operands = [arg for arg in argv[1:] if not arg.startswith("-")]
-        pair = operands[:2]
-        if len(pair) == 2 and pair[0].endswith("/.") and pair[1].startswith("/"):
-            source, destination = pair[0][:-2].rstrip("/"), pair[1].rstrip("/")
-    return source, destination, env_value, manager_found
+        if copier is not None:
+            argv = list(copier.get("command") or []) + list(copier.get("args") or [])
+            if argv and os.path.basename(argv[0]) == "cp":
+                operands = [arg for arg in argv[1:] if not arg.startswith("-")]
+                pair = operands[:2]
+                if len(pair) == 2 and pair[0].endswith("/.") and pair[1].startswith("/"):
+                    source, destination = pair[0][:-2].rstrip("/"), pair[1].rstrip("/")
+
+        name = (document.get("metadata") or {}).get("name") or "<unnamed>"
+        found.append((name, source, destination, env_value))
+    return found
 
 
 def manifest_path_contract(containerfile, chart_deployment):
     image_dir = containerfile_manifest_dir(containerfile)
-    source, destination, env_value, manager_found = chart_manifest_paths(chart_deployment)
+    deployments = chart_manifest_paths(chart_deployment)
 
     problems = []
     if not image_dir:
         problems.append(f"{containerfile}: no COPY of config/manifests/ into an absolute path")
-    if not source or not destination:
-        problems.append(f"{chart_deployment}: no 'cp -r <dir>/. <dir>/' init container found")
-    if not manager_found:
+    if not deployments:
         problems.append(f"{chart_deployment}: no container named manager in a Deployment")
-    elif not env_value:
-        problems.append(
-            f"{chart_deployment}: the manager container does not set "
-            "ODH_MODULE_OPERATOR_MANIFESTS_PATH"
-        )
 
-    if not problems:
-        if source != image_dir:
+    for name, source, destination, env_value in deployments:
+        where = f"{chart_deployment}: Deployment {name}"
+        if not source or not destination:
+            problems.append(f"{where}: no 'cp -r <dir>/. <dir>/' init container found")
+            continue
+        if not env_value:
             problems.append(
-                f"chart copies from {source} but the image ships manifests to {image_dir}"
+                f"{where}: the manager container does not set "
+                "ODH_MODULE_OPERATOR_MANIFESTS_PATH"
+            )
+            continue
+        if image_dir and source != image_dir:
+            problems.append(
+                f"{where}: chart copies from {source} but the image ships manifests to {image_dir}"
             )
         if destination != env_value:
             problems.append(
-                f"chart copies to {destination} but the operator reads {env_value}"
+                f"{where}: chart copies to {destination} but the operator reads {env_value}"
             )
 
-    return problems, (image_dir, source, destination, env_value)
+    return problems, image_dir, deployments
 
 
 def main():
@@ -230,12 +245,15 @@ def main():
             print(failure, file=sys.stderr)
         return 1 if failures else 0
 
-    problems, paths = manifest_path_contract(args.containerfile, args.chart_deployment)
-    image_dir, source, destination, env_value = paths
+    problems, image_dir, deployments = manifest_path_contract(
+        args.containerfile, args.chart_deployment
+    )
     print(f"image ships manifests to : {image_dir}")
-    print(f"chart copies from        : {source}")
-    print(f"chart copies to          : {destination}")
-    print(f"operator reads           : {env_value}")
+    for name, source, destination, env_value in deployments:
+        print(f"Deployment {name}")
+        print(f"  chart copies from      : {source}")
+        print(f"  chart copies to        : {destination}")
+        print(f"  operator reads         : {env_value}")
     for problem in problems:
         print(problem, file=sys.stderr)
     return 1 if problems else 0
