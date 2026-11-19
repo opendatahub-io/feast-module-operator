@@ -399,8 +399,9 @@ jobs:
       # image, which does not define it: the operand crash-loops on
       # "flag provided but not defined" and the module never becomes Ready.
       # That file is vendored from opendatahub-io/feast and is overwritten by
-      # `make get-manifests`. Once the fix lands there, add `rhoai` to
-      # E2E_PLATFORMS and make this job a fail-fast: false matrix.
+      # `make get-manifests`; the fix is opendatahub-io/feast#312. Once it
+      # lands and the manifest pin moves, add `rhoai` to E2E_PLATFORMS and
+      # make this job a fail-fast: false matrix.
       - name: Run the operator e2e against the PR image
         env:
           GOTOOLCHAIN: local
