@@ -88,7 +88,7 @@ test-e2e-run: ## Run e2e tests only (operator must already be deployed).
 
 .PHONY: test-e2e-setup
 test-e2e-setup: ## Prepare the cluster for e2e tests.
-	@:
+	./hack/scripts/setup-e2e.sh "$(OPERATOR_NAMESPACE)"
 
 .PHONY: test-e2e
 test-e2e: test-e2e-cleanup test-e2e-setup deploy-helm test-e2e-run ## Run e2e tests (clean, prepare, deploy, then run). ODH_PLATFORM_TYPE=odh|rhoai|managed-rhoai

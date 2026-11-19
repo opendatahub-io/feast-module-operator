@@ -46,12 +46,14 @@ env:
   SIM_HELM_VERSION: '4.2.0'
   SIM_KUBECONFORM_VERSION: '0.7.0'
   SIM_KUBERNETES_VERSION: '1.31.0'
+  SIM_KIND_VERSION: '0.31.0'
   # SHA-256 of the linux-amd64 release archives for the versions above, taken
   # from each project's published checksum file. A download that does not match
   # fails closed before anything is extracted or installed (CWE-494/CWE-829).
   SIM_HELM_SHA256: '97dbeb971be4ac4b27e3839976d9564c0fb35c6f3b1da89dd1e292d236af4096'
   SIM_KUSTOMIZE_SHA256: '029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d'
   SIM_KUBECONFORM_SHA256: 'c31518ddd122663b3f3aa874cfe8178cb0988de944f29c74a0b9260920d115d3'
+  SIM_KIND_SHA256: 'eb244cbafcc157dff60cf68693c14c9a75c4e6e6fedaf9cd71c58117cb93e3fa'
 
 jobs:
   check-skip:
@@ -78,7 +80,10 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
-          RELEVANT='^(api/|cmd/|internal/|pkg/|config/|hack/|Containerfile|Makefile|go\.(mod|sum)|\.dockerignore|\.tekton/|scripts/(validate-build\.sh|manifest_contract\.py)|\.github/workflows/pr-build-validation\.yml)'
+          # test/e2e/ is included on purpose: the suite is now part of the
+          # gate, so a change to it has to re-run the gate. Leaving it out is
+          # how the suite stops being run without anyone noticing.
+          RELEVANT='^(api/|cmd/|internal/|pkg/|config/|hack/|test/e2e/|Containerfile|Makefile|go\.(mod|sum)|\.dockerignore|\.tekton/|scripts/(validate-build\.sh|manifest_contract\.py)|\.github/workflows/pr-build-validation\.yml)'
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -334,6 +339,77 @@ jobs:
           set -euo pipefail
           ./scripts/validate-build.sh image
 
+  operator-e2e:
+    name: Operator e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    needs: check-skip
+    if: needs.check-skip.outputs.should-skip != 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Install Helm
+        env:
+          SIM_HELM_VERSION: ${{ env.SIM_HELM_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/helm.tar.gz \
+            "https://get.helm.sh/helm-v${SIM_HELM_VERSION}-linux-amd64.tar.gz"
+          printf '%s  %s\n' "$SIM_HELM_SHA256" /tmp/helm.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/helm.tar.gz -C /tmp
+          sudo install -m 0755 "/tmp/linux-amd64/helm" /usr/local/bin/helm
+          helm version --short
+
+      - name: Install kind
+        env:
+          SIM_KIND_VERSION: ${{ env.SIM_KIND_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/kind \
+            "https://github.com/kubernetes-sigs/kind/releases/download/v${SIM_KIND_VERSION}/kind-linux-amd64"
+          printf '%s  %s\n' "$SIM_KIND_SHA256" /tmp/kind | sha256sum --check --strict
+          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
+          kind version
+
+      # `make test-e2e` deploys the image this PR builds through IMG, then runs
+      # the repository's own suite against it. `test-e2e-setup` supplies the
+      # OpenShift service-ca objects that the rhoai overlay mounts, and the
+      # script supplies the ServiceMonitor CRD the controller owns.
+      #
+      # ODH only for now. ODH_PLATFORM_TYPE=rhoai is wired and passes locally,
+      # but it cannot pass in CI until the rhoai overlay stops passing
+      # `--metrics-cert-path` to the pinned `quay.io/feastdev/feast-operator`
+      # image, which does not define it: the operand crash-loops on
+      # "flag provided but not defined" and the module never becomes Ready.
+      # That file is vendored from opendatahub-io/feast and is overwritten by
+      # `make get-manifests`. Once the fix lands there, add `rhoai` to
+      # E2E_PLATFORMS and make this job a fail-fast: false matrix.
+      - name: Run the operator e2e against the PR image
+        env:
+          GOTOOLCHAIN: local
+          E2E_PLATFORMS: odh
+          HELM_BIN: /usr/local/bin/helm
+        run: |
+          set -euo pipefail
+          ./scripts/validate-build.sh e2e
+
   summary:
     name: Build Validation Summary
     runs-on: ubuntu-latest
@@ -346,6 +422,7 @@ jobs:
       - manifest-validation
       - chart-validation
       - image-validation
+      - operator-e2e
     if: always()
     steps:
       - name: Check results
@@ -358,6 +435,7 @@ jobs:
           MANIFESTS: ${{ needs.manifest-validation.result }}
           CHART: ${{ needs.chart-validation.result }}
           IMAGE: ${{ needs.image-validation.result }}
+          E2E: ${{ needs.operator-e2e.result }}
         run: |
           set -euo pipefail
           echo "## Konflux Build Simulation Results"
@@ -380,10 +458,11 @@ jobs:
           echo "| Manifests | ${MANIFESTS} |"
           echo "| Helm chart | ${CHART} |"
           echo "| Container image | ${IMAGE} |"
+          echo "| Operator e2e | ${E2E} |"
           echo ""
 
           failed=false
-          for result in "$STATIC" "$HERMETIC" "$MANIFESTS" "$CHART" "$IMAGE"; do
+          for result in "$STATIC" "$HERMETIC" "$MANIFESTS" "$CHART" "$IMAGE" "$E2E"; do
             if [ "$result" != "success" ]; then
               failed=true
             fi

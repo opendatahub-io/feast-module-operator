@@ -13,7 +13,7 @@ set -euo pipefail
 # contracts between files that no compiler checks.
 #
 # Usage:
-#   scripts/validate-build.sh <static|hermetic|manifests|chart|image|all>
+#   scripts/validate-build.sh <static|hermetic|manifests|chart|image|e2e|all>
 #   scripts/validate-build.sh builder-go   # the Go version the builder image pins
 #   scripts/validate-build.sh target       # dockerfile/context from the PipelineRun
 #
@@ -36,6 +36,10 @@ set -euo pipefail
 #                        drift fails, which is the safe default.
 #   SKIP_CHART_DRIFT=1   Skip the regenerate-and-compare step
 #   SKIP_IMAGE=1         Skip the image build
+#   E2E_PLATFORMS        Platform types the e2e mode deploys (default "odh rhoai")
+#   E2E_CLUSTER_NAME     Kind cluster name (default konflux-sim)
+#   E2E_REGISTRY_NAME    Local registry container name (default konflux-sim-registry)
+#   E2E_REGISTRY_PORT    Local registry port on 127.0.0.1 (default 5001)
 
 MODE="${1:-all}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -68,6 +72,28 @@ require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     err "required command not found: $1"
     exit 1
+  fi
+}
+
+# verify_sha256 <expected> <file>
+#
+# macOS ships a /sbin/sha256sum that has no --check, so compare the digest
+# directly instead of depending on GNU coreutils.
+verify_sha256() {
+  local expected="$1" file="$2" actual
+
+  if command -v shasum >/dev/null 2>&1; then
+    actual="$(shasum -a 256 "$file" | awk '{print $1}')"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$file" | awk '{print $1}')"
+  else
+    err "no SHA-256 tool available (need shasum or sha256sum)"
+    return 1
+  fi
+
+  if [ "$actual" != "$expected" ]; then
+    err "SHA-256 mismatch for $(basename "$file"): expected $expected, got $actual"
+    return 1
   fi
 }
 
@@ -607,12 +633,158 @@ validate_image() {
   pass "the image ships manifests/feastoperator/"
 }
 
+# ---------------------------------------------------------------------------
+# e2e: run the repository's own operator e2e against the image built here.
+#
+# `make test-e2e` takes the operator image through IMG and the platform through
+# ODH_PLATFORM_TYPE, so this exercises the PR image and the overlay it selects
+# at runtime. Neither is visible to `go build` or to `helm template`.
+#
+# The chart pins `imagePullPolicy: Always`, so a locally built image cannot be
+# loaded into the node's containerd: it has to be pullable. A throwaway
+# registry that the Kind node reaches through a containerd mirror keeps that
+# honest without publishing anything.
+# ---------------------------------------------------------------------------
+
+E2E_CLUSTER_NAME="${E2E_CLUSTER_NAME:-konflux-sim}"
+E2E_REGISTRY_NAME="${E2E_REGISTRY_NAME:-konflux-sim-registry}"
+E2E_REGISTRY_PORT="${E2E_REGISTRY_PORT:-5001}"
+E2E_PLATFORMS="${E2E_PLATFORMS:-odh rhoai}"
+E2E_NAMESPACE="${E2E_NAMESPACE:-opendatahub-feast-system}"
+E2E_SERVICEMONITOR_CRDS="${E2E_SERVICEMONITOR_CRDS:-https://github.com/prometheus-operator/prometheus-operator/releases/download/v0.80.1/stripped-down-crds.yaml}"
+E2E_SERVICEMONITOR_CRDS_SHA256="${E2E_SERVICEMONITOR_CRDS_SHA256:-2948db44666044f0f5639649dc21b13bd403545562797c3a4d9bd76efab9e8dd}"
+
+e2e_teardown() {
+  if [ "${E2E_KEEP_CLUSTER:-0}" = "1" ]; then
+    warn "E2E_KEEP_CLUSTER=1: leaving cluster ${E2E_CLUSTER_NAME} and registry in place"
+    return 0
+  fi
+  kind delete cluster --name "$E2E_CLUSTER_NAME" >/dev/null 2>&1 || true
+  "$CONTAINER_TOOL" rm -f "$E2E_REGISTRY_NAME" >/dev/null 2>&1 || true
+}
+
+e2e_dump_diagnostics() {
+  local platform="$1"
+  warn "diagnostics for ODH_PLATFORM_TYPE=${platform} (best effort):"
+  {
+    kubectl get feastoperator -A -o yaml 2>&1 | head -60
+    kubectl get deploy,svc,sa,cm -n "$E2E_NAMESPACE" -o wide 2>&1
+    kubectl get events -n "$E2E_NAMESPACE" --sort-by=.lastTimestamp 2>&1 | tail -30
+    kubectl logs -n "$E2E_NAMESPACE" -l control-plane=controller-manager --tail=80 2>&1
+    kubectl logs -n "$E2E_NAMESPACE" -l control-plane=controller-manager --tail=80 --previous 2>&1
+    kubectl -n "$E2E_NAMESPACE" describe pod -l control-plane=controller-manager 2>&1 | tail -40
+  } | sed 's/^/   /'
+}
+
+validate_e2e() {
+  resolve_konflux_target
+  require_cmd "$CONTAINER_TOOL"
+  require_cmd kind
+  require_cmd kubectl
+  require_cmd make
+  require_cmd curl
+
+  # Never touch the caller's kubeconfig. A failed `kind create` must not leave
+  # `make deploy-helm` pointed at whatever cluster the shell already knew about.
+  local kubeconfig
+  kubeconfig="$(mktemp)"
+  export KUBECONFIG="$kubeconfig"
+
+  trap 'e2e_teardown; rm -f "${kubeconfig:-}"' EXIT
+  trap 'exit 130' INT TERM
+
+  info "Building the Konflux container image with ${CONTAINER_TOOL}..."
+  "$CONTAINER_TOOL" build --platform "$PLATFORM" -f "$CONTAINERFILE" -t "$IMAGE" "$BUILD_CONTEXT"
+
+  info "Starting the local registry on 127.0.0.1:${E2E_REGISTRY_PORT}..."
+  "$CONTAINER_TOOL" rm -f "$E2E_REGISTRY_NAME" >/dev/null 2>&1 || true
+  "$CONTAINER_TOOL" run -d --name "$E2E_REGISTRY_NAME" \
+    -p "127.0.0.1:${E2E_REGISTRY_PORT}:5000" registry:3 >/dev/null
+
+  local kind_config
+  kind_config="$(mktemp)"
+  # Enable containerd's certs.d directory, which is how a node is told about a
+  # registry that is not on the public internet. This is kind's documented
+  # local-registry setup; the older registry.mirrors key does not apply to
+  # containerd 2.x.
+  cat > "$kind_config" <<'YAML'
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"
+YAML
+
+  info "Creating Kind cluster ${E2E_CLUSTER_NAME}..."
+  kind create cluster --name "$E2E_CLUSTER_NAME" --wait 180s --config "$kind_config"
+  rm -f "$kind_config"
+
+  # `localhost` inside a node is not the host's localhost, so alias it to the
+  # registry container, which the node reaches by name over the kind network.
+  "$CONTAINER_TOOL" network connect kind "$E2E_REGISTRY_NAME" >/dev/null 2>&1 || true
+  local node registry_dir
+  registry_dir="/etc/containerd/certs.d/localhost:${E2E_REGISTRY_PORT}"
+  for node in $(kind get nodes --name "$E2E_CLUSTER_NAME"); do
+    "$CONTAINER_TOOL" exec "$node" mkdir -p "$registry_dir"
+    printf '[host."http://%s:5000"]\n' "$E2E_REGISTRY_NAME" \
+      | "$CONTAINER_TOOL" exec -i "$node" cp /dev/stdin "${registry_dir}/hosts.toml"
+  done
+
+  # The controller registers an owner watch on monitoring.coreos.com
+  # ServiceMonitors unconditionally, so the manager cannot start without that
+  # CRD. Platforms ship it; Kind does not.
+  info "Installing the prometheus-operator CRDs (the operator owns a ServiceMonitor)..."
+  local crd_bundle
+  crd_bundle="$(mktemp)"
+  curl -fsSL -o "$crd_bundle" "$E2E_SERVICEMONITOR_CRDS"
+  verify_sha256 "$E2E_SERVICEMONITOR_CRDS_SHA256" "$crd_bundle"
+  # Server-side apply: these CRDs exceed the 256 KiB client-side apply limit.
+  kubectl apply --server-side -f "$crd_bundle" >/dev/null
+  rm -f "$crd_bundle"
+  kubectl wait --for=condition=Established --timeout=120s \
+    crd/servicemonitors.monitoring.coreos.com >/dev/null
+
+  local image_ref
+  image_ref="localhost:${E2E_REGISTRY_PORT}/konflux-sim/feast-module-operator:$(git rev-parse --short=12 HEAD)"
+  "$CONTAINER_TOOL" tag "$IMAGE" "$image_ref"
+  "$CONTAINER_TOOL" push "$image_ref" >/dev/null
+  pass "the PR image is pullable at ${image_ref}"
+
+  local platform
+  for platform in $E2E_PLATFORMS; do
+    info "Running the operator e2e with ODH_PLATFORM_TYPE=${platform}..."
+    local -a make_vars=(
+      "IMG=$image_ref"
+      "ODH_PLATFORM_TYPE=$platform"
+      "HELM_NAMESPACE=$E2E_NAMESPACE"
+      "OPERATOR_NAMESPACE=$E2E_NAMESPACE"
+    )
+    # Reuse prebuilt binaries when CI installed them; the Makefile otherwise
+    # shells out to `go run`, which re-resolves the module on every call.
+    if [ -n "$HELM_BIN" ]; then
+      make_vars+=("HELM=$HELM_BIN")
+    fi
+    if [ -n "$KUSTOMIZE_BIN" ]; then
+      make_vars+=("KUSTOMIZE=$KUSTOMIZE_BIN")
+    fi
+
+    if ! CONTAINER_TOOL="$CONTAINER_TOOL" make test-e2e ${make_vars[@]+"${make_vars[@]}"}; then
+      err "operator e2e failed for ODH_PLATFORM_TYPE=${platform}"
+      e2e_dump_diagnostics "$platform"
+      return 1
+    fi
+    pass "operator e2e passed for ODH_PLATFORM_TYPE=${platform}"
+  done
+}
+
 case "$MODE" in
   static)    validate_static ;;
   hermetic)  validate_hermetic ;;
   manifests) validate_manifests ;;
   chart)     validate_chart ;;
   image)     validate_image ;;
+  e2e)       validate_e2e ;;
   builder-go) builder_go_version ;;
   target)
     resolve_konflux_target
@@ -622,7 +794,7 @@ case "$MODE" in
   all)       validate_static; validate_hermetic; validate_manifests; validate_chart; validate_image ;;
   *)
     err "Unknown mode: $MODE"
-    echo "Usage: $0 <static|hermetic|manifests|chart|image|builder-go|target|all>" >&2
+    echo "Usage: $0 <static|hermetic|manifests|chart|image|e2e|builder-go|target|all>" >&2
     exit 2
     ;;
 esac
