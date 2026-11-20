@@ -55,6 +55,10 @@ expect_failure odh-failure \
   E2E_ODH=failure \
   E2E_RHOAI_OUTCOME=failure \
   E2E_RHOAI_CLASSIFICATION=expected-upstream-metrics-cert-path
+if grep -Fq "without the documented upstream signature" "$tmp/odh-failure.out"; then
+  echo "not ok - accepted rhoai classification was reported as a signature mismatch during an odh failure" >&2
+  exit 1
+fi
 expect_failure rhoai-unexpected-success \
   E2E_RHOAI_OUTCOME=success \
   E2E_RHOAI_CLASSIFICATION=expected-upstream-metrics-cert-path

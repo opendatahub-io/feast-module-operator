@@ -22,8 +22,14 @@ if [ -z "$evidence" ] || [ ! -s "$evidence" ]; then
   exit 0
 fi
 
+allowed_failed_leaf="TestFeastOperator/foundation/should become ready"
+failed_leaf_count="$(grep -Fc 'failed leaf: ' "$evidence" || true)"
+allowed_leaf_count="$(grep -Fxc "failed leaf: ${allowed_failed_leaf}" "$evidence" || true)"
+
 if grep -Fq 'operand deployment feast-operator-controller-manager' "$evidence" &&
-   grep -Fq 'flag provided but not defined: -metrics-cert-path' "$evidence"; then
+   grep -Fq 'flag provided but not defined: -metrics-cert-path' "$evidence" &&
+   [ "$failed_leaf_count" -eq 1 ] &&
+   [ "$allowed_leaf_count" -eq 1 ]; then
   echo "expected-upstream-metrics-cert-path"
   exit 0
 fi

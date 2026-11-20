@@ -40,6 +40,7 @@ type foundationTests struct {
 	operatorCfgMap  *corev1.ConfigMap
 	workloadDeploy  *appsv1.Deployment
 	workloadService *corev1.Service
+	failedLeaves    []string
 }
 
 func newFoundationTests(suite *feastE2ETest) *foundationTests {
@@ -76,20 +77,30 @@ func newFoundationTests(suite *feastE2ETest) *foundationTests {
 }
 
 func (ft *foundationTests) Execute(t *testing.T) {
-	t.Run("should have module CRD installed", ft.testModuleCRDInstalled)
-	t.Run("should have operator ConfigMap deployed", ft.testOperatorConfigMap)
-	t.Run("should run the operator image built for this PR", ft.testOperatorImage)
-	t.Run("should deploy the manifests matching the platform type", ft.testPlatformManifests)
-	t.Run("should reject a non-singleton FeastOperator", ft.testSingletonEnforced)
-	t.Run("should become ready", ft.testBecomesReady)
-	t.Run("should have operator and operand Deployments available", ft.testDeploymentsAvailable)
-	t.Run("should report release version and platform", ft.testReleaseStatus)
-	t.Run("should set platform labels and annotations", ft.testPlatformLabels)
-	t.Run("should set owner references", ft.testOwnerReferences)
-	t.Run("should expose a reachable operand Service", ft.testOperandServiceReachable)
-	t.Run("should reflect spec changes in operands", ft.testSpecProjectedToOperand)
-	t.Run("should report not ready when a critical operand fails", ft.testReadyFalseOnOperandFailure)
-	t.Run("should remove operands when the module CR is deleted", ft.testCleanupRemovesOperands)
+	tests := []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{"should have module CRD installed", ft.testModuleCRDInstalled},
+		{"should have operator ConfigMap deployed", ft.testOperatorConfigMap},
+		{"should run the operator image built for this PR", ft.testOperatorImage},
+		{"should deploy the manifests matching the platform type", ft.testPlatformManifests},
+		{"should reject a non-singleton FeastOperator", ft.testSingletonEnforced},
+		{"should become ready", ft.testBecomesReady},
+		{"should have operator and operand Deployments available", ft.testDeploymentsAvailable},
+		{"should report release version and platform", ft.testReleaseStatus},
+		{"should set platform labels and annotations", ft.testPlatformLabels},
+		{"should set owner references", ft.testOwnerReferences},
+		{"should expose a reachable operand Service", ft.testOperandServiceReachable},
+		{"should reflect spec changes in operands", ft.testSpecProjectedToOperand},
+		{"should report not ready when a critical operand fails", ft.testReadyFalseOnOperandFailure},
+		{"should remove operands when the module CR is deleted", ft.testCleanupRemovesOperands},
+	}
+	for _, test := range tests {
+		if !t.Run(test.name, test.run) {
+			ft.failedLeaves = append(ft.failedLeaves, t.Name()+"/"+test.name)
+		}
+	}
 }
 
 func (ft *foundationTests) testModuleCRDInstalled(t *testing.T) {
@@ -213,6 +224,9 @@ func (ft *foundationTests) dumpFailureEvidence(t *testing.T) {
 
 	writeEvidence("=== e2e failure evidence ===\n")
 	writeEvidence("platform=%s\n", os.Getenv("ODH_PLATFORM_TYPE"))
+	for _, leaf := range ft.failedLeaves {
+		writeEvidence("failed leaf: %s\n", leaf)
+	}
 
 	deploy := &appsv1.Deployment{}
 	if err := k8sClient.Get(ctx, client.ObjectKey{
@@ -236,6 +250,7 @@ func (ft *foundationTests) dumpFailureEvidence(t *testing.T) {
 	}
 
 	tail := int64(200)
+	const maxLogBytes int64 = 64 << 10
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		writeEvidence("pod %s phase=%s reason=%s\n", pod.Name, pod.Status.Phase, pod.Status.Reason)
@@ -245,16 +260,29 @@ func (ft *foundationTests) dumpFailureEvidence(t *testing.T) {
 				if previous {
 					logType = "previous"
 				}
-				logs, logErr := kubeClient.CoreV1().Pods(ft.operatorNamespace).GetLogs(pod.Name, &corev1.PodLogOptions{
+				request := kubeClient.CoreV1().Pods(ft.operatorNamespace).GetLogs(pod.Name, &corev1.PodLogOptions{
 					Container: container.Name,
 					Previous:  previous,
 					TailLines: &tail,
-				}).DoRaw(ctx)
+				})
+				stream, logErr := request.Stream(ctx)
 				if logErr != nil {
 					writeEvidence("--- pod %s/%s %s logs unavailable: %v ---\n", pod.Name, container.Name, logType, logErr)
 					continue
 				}
-				writeEvidence("--- pod %s/%s %s logs ---\n%s\n", pod.Name, container.Name, logType, logs)
+				writeEvidence("--- pod %s/%s %s logs (max %d bytes) ---\n", pod.Name, container.Name, logType, maxLogBytes)
+				written, copyErr := io.Copy(out, io.LimitReader(stream, maxLogBytes))
+				closeErr := stream.Close()
+				writeEvidence("\n")
+				if copyErr != nil {
+					writeEvidence("--- pod %s/%s %s logs read failed: %v ---\n", pod.Name, container.Name, logType, copyErr)
+				}
+				if closeErr != nil {
+					writeEvidence("--- pod %s/%s %s logs close failed: %v ---\n", pod.Name, container.Name, logType, closeErr)
+				}
+				if written == maxLogBytes {
+					writeEvidence("--- pod %s/%s %s logs truncated at %d bytes ---\n", pod.Name, container.Name, logType, maxLogBytes)
+				}
 			}
 		}
 	}
