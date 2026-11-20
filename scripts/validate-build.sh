@@ -37,6 +37,7 @@ set -euo pipefail
 #   SKIP_CHART_DRIFT=1   Skip the regenerate-and-compare step
 #   SKIP_IMAGE=1         Skip the image build
 #   E2E_PLATFORMS        Platform types the e2e mode deploys (default "odh rhoai")
+#   E2E_EXPECTED_IMAGE   Image reference the live operator Deployment must run
 #   E2E_CLUSTER_NAME     Kind cluster name (default konflux-sim)
 #   E2E_REGISTRY_NAME    Local registry container name (default konflux-sim-registry)
 #   E2E_REGISTRY_PORT    Local registry port on 127.0.0.1 (default 5001)
@@ -67,6 +68,11 @@ info() { printf 'ℹ️  %s\n' "$*"; }
 pass() { printf '✅ %s\n' "$*"; }
 warn() { printf '⚠️  %s\n' "$*"; }
 err()  { printf '❌ %s\n' "$*" >&2; }
+
+format_tolerated_drift() {
+  local base_ref="$1"
+  awk -v base="$base_ref" '{ print "   tolerated (already stale on " base "): " $0 }'
+}
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -417,7 +423,7 @@ run_chart_drift() {
 
   if [ -z "$added_drift" ]; then
     warn "config/chart already does not match 'make helm' output on $base_ref; this PR adds no drift:"
-    printf '%s\n' "$head_drift" | sed 's/^/   tolerated (already stale on '"$base_ref"'): /'
+    printf '%s\n' "$head_drift" | format_tolerated_drift "$base_ref"
     warn "  config/chart is what manifests-config.yaml consumes (sourcePath: config/chart)."
     warn "  Tracked separately; this check fails as soon as $base_ref is clean again."
     return 0
@@ -782,11 +788,30 @@ YAML
   "$CONTAINER_TOOL" push "$image_ref" >/dev/null
   pass "the PR image is pullable at ${image_ref}"
 
+  # Helm resolves tags to digests when the container tool can supply one. Use
+  # the same resolver here so the e2e compares against the exact reference Helm
+  # deploys, not just the mutable tag that was pushed.
+  local expected_image
+  expected_image="$(CONTAINER_TOOL="$CONTAINER_TOOL" bash ./hack/scripts/resolve-image-ref.sh "$image_ref")"
+  case "$expected_image" in
+    "$image_ref" | "$image_ref"@*) ;;
+    *)
+      err "resolved image ${expected_image:-<empty>} is not the PR image ${image_ref}"
+      return 1
+      ;;
+  esac
+  pass "the e2e will require the operator Deployment to run ${expected_image}"
+
   local platform
   for platform in $E2E_PLATFORMS; do
     info "Running the operator e2e with ODH_PLATFORM_TYPE=${platform}..."
     local -a make_vars=(
-      "IMG=$image_ref"
+      # Pin the exact reference used for the assertion. Passing the tag here
+      # would let deploy-helm resolve it again, potentially to a different
+      # digest, and make the image identity check racy.
+      "IMG=$expected_image"
+      "RESOLVE_IMAGE_REF=0"
+      "E2E_EXPECTED_IMAGE=$expected_image"
       "ODH_PLATFORM_TYPE=$platform"
       "HELM_NAMESPACE=$E2E_NAMESPACE"
       "OPERATOR_NAMESPACE=$E2E_NAMESPACE"
@@ -809,23 +834,25 @@ YAML
   done
 }
 
-case "$MODE" in
-  static)    validate_static ;;
-  hermetic)  validate_hermetic ;;
-  manifests) validate_manifests ;;
-  chart)     validate_chart ;;
-  image)     validate_image ;;
-  e2e)       validate_e2e ;;
-  builder-go) builder_go_version ;;
-  target)
-    resolve_konflux_target
-    printf 'dockerfile=%s\ncontext=%s\nbuilder_go=%s\n' \
-      "$CONTAINERFILE" "$BUILD_CONTEXT" "$(builder_go_version)"
-    ;;
-  all)       validate_static; validate_hermetic; validate_manifests; validate_chart; validate_image ;;
-  *)
-    err "Unknown mode: $MODE"
-    echo "Usage: $0 <static|hermetic|manifests|chart|image|e2e|builder-go|target|all>" >&2
-    exit 2
-    ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "$MODE" in
+    static)    validate_static ;;
+    hermetic)  validate_hermetic ;;
+    manifests) validate_manifests ;;
+    chart)     validate_chart ;;
+    image)     validate_image ;;
+    e2e)       validate_e2e ;;
+    builder-go) builder_go_version ;;
+    target)
+      resolve_konflux_target
+      printf 'dockerfile=%s\ncontext=%s\nbuilder_go=%s\n' \
+        "$CONTAINERFILE" "$BUILD_CONTEXT" "$(builder_go_version)"
+      ;;
+    all)       validate_static; validate_hermetic; validate_manifests; validate_chart; validate_image ;;
+    *)
+      err "Unknown mode: $MODE"
+      echo "Usage: $0 <static|hermetic|manifests|chart|image|e2e|builder-go|target|all>" >&2
+      exit 2
+      ;;
+  esac
+fi

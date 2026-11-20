@@ -12,6 +12,7 @@ Run the same checks locally with `scripts/validate-build.sh`.
 ./scripts/validate-build.sh manifests   # kustomize entry points, schemas, RBAC subjects
 ./scripts/validate-build.sh chart       # helm render + regenerate-and-diff against `make helm`
 ./scripts/validate-build.sh image       # build the image, run it, assert the manifests ship
+./scripts/validate-build.sh e2e         # build/push the PR image, deploy it to Kind, run the e2e suite
 ./scripts/validate-build.sh all
 ./scripts/validate-build.sh target      # dockerfile + build context from the PipelineRun
 ./scripts/validate-build.sh builder-go  # Go version the Containerfile's builder pins
@@ -30,6 +31,7 @@ validating `Containerfile` instead.
 | Validate Manifests | A kustomize entry point that no longer builds, a built-in `kind`/`apiVersion` typo, an RBAC binding that names a ServiceAccount the manifests never create |
 | Validate Helm Chart | A chart that renders the wrong resources, and `config/chart` drifting from `make helm` |
 | Build Container Image | A Containerfile that builds a binary the runtime image cannot start, or an image that ships no `manifests/feastoperator/` |
+| Operator e2e | A PR-built image that deploys but cannot run the operator, a live Deployment that runs a different image than the one this PR pushed, or a platform overlay whose operands never become Ready |
 
 ## Why the chart check exists
 
@@ -40,9 +42,10 @@ chart, so a kustomize change can ship a chart that does not contain it. That is
 the failure class behind RHOAIENG-96436 (odh-feast-operator manifests out of
 sync, an RC blocker).
 
-The check fails when a pull request introduces or leaves drift. Because `main`
-itself can be behind on regeneration, the base ref is regenerated as well and
-the two sets of drifted files are compared:
+The check fails when a pull request introduces drift on a generated file that
+is clean on the base ref. Because `main` itself can be behind on regeneration,
+the base ref is regenerated as well and the two sets of drifted files are
+compared:
 
 | Situation | Result |
 | --- | --- |
@@ -55,24 +58,33 @@ The middle row is the only tolerated case, and it is a subset rule: the check
 compares the *names* of the drifted files, not the size of the drift. A pull
 request that adds drift to a file the base ref already drifts on passes,
 because that file name is already in the tolerated set. What it cannot do is
-push drift into a file that is clean on the base ref. The warning disappears on
-its own once the committed chart is regenerated on the base branch.
+push drift into a file that is clean on the base ref. After the base branch is
+regenerated and this branch rebases, that file becomes new drift here and must
+be regenerated and committed before the check passes.
 
 ## Operator e2e
 
-`operator-e2e` is the only check that runs the operator. It builds the image
-this pull request produces, deploys it to a throwaway Kind cluster, applies a
-`FeatureStore` and runs the repository's own suite against it, so a
+The `operator-e2e-*` jobs are the only checks that run the operator. Each builds
+the image this pull request produces, deploys it to a throwaway Kind cluster,
+applies a `FeatureStore` and runs the repository's own suite against it, so a
 container-level break that leaves every static check green still fails here.
+The suite also reads the live operator Deployment's
+`.spec.template.spec.containers` entry and requires the `manager` image to equal
+the exact image the setup pushed. Readiness alone is not enough to prove the PR
+image was exercised.
 
 `ODH_PLATFORM_TYPE` selects a different overlay (namespace,
 `RELATED_IMAGE_CRON_JOB`, the rbac-proxy image, and `prometheus` plus a
-`ServiceMonitor` on `rhoai`), so the job is a `fail-fast: false` matrix with one
-leg per platform. The `rhoai` leg runs but is non-blocking until
+`ServiceMonitor` on `rhoai`), so there are separate `odh` and `rhoai` jobs.
+The `odh` job is blocking. The `rhoai` job runs and is displayed as a failure,
+but it is expected-fail and non-blocking until
 [opendatahub-io/feast#312](https://github.com/opendatahub-io/feast/pull/312)
-lands and the vendored manifest pin moves; it is red because the overlay passes
+lands and the vendored manifest pin moves; the overlay currently passes
 `--metrics-cert-path` to a pinned `quay.io/feastdev/feast-operator` image that
-does not define the flag.
+does not define the flag. The summary reads the rhoai E2E step outcome, not the
+job result hidden by `continue-on-error`, so a rhoai failure can never be shown
+as success. Once the pin moves, remove the expected-failure handling and make
+that job blocking.
 
 ## Why the RBAC subject check exists
 
@@ -92,7 +104,7 @@ RHOAIENG-100515 (Data module NotReady, DSC never Ready) and RHOAIENG-99631
   repository.
 - **Reconcile behaviour beyond what the suite asserts.** RHOAIENG-101993 (the
   reconciler crashing with `is not a WithReleases` after an
-  `odh-platform-utilities` bump) is covered by `operator-e2e` above.
+  `odh-platform-utilities` bump) is covered by `operator-e2e-odh` above.
   `make test-integration` still has no workflow.
 - **Multi-architecture images.** The PipelineRun does not set
   `build-platforms`, so the shared pipeline produces `linux/x86_64` only.
