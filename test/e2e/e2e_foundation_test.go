@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -75,6 +76,7 @@ func newFoundationTests(suite *feastE2ETest) *foundationTests {
 func (ft *foundationTests) Execute(t *testing.T) {
 	t.Run("should have module CRD installed", ft.testModuleCRDInstalled)
 	t.Run("should have operator ConfigMap deployed", ft.testOperatorConfigMap)
+	t.Run("should run the operator image built for this PR", ft.testOperatorImage)
 	t.Run("should deploy the manifests matching the platform type", ft.testPlatformManifests)
 	t.Run("should reject a non-singleton FeastOperator", ft.testSingletonEnforced)
 	t.Run("should become ready", ft.testBecomesReady)
@@ -108,6 +110,18 @@ func (ft *foundationTests) testOperatorConfigMap(t *testing.T) {
 		jq.Match(`.metadata.name == "%s"`, feastoperatorcontroller.PlatformConfigCMName),
 		jq.Match(`(.data."%s" == null) or ((.metadata.ownerReferences // []) | map(select(.kind == "Platform")) | length > 0)`, moduleconfig.KeyPlatformVersion),
 	))
+}
+
+func (ft *foundationTests) testOperatorImage(t *testing.T) {
+	expectedImage := os.Getenv("E2E_EXPECTED_IMAGE")
+	g := NewWithT(t)
+	g.Expect(expectedImage).NotTo(BeEmpty(), "E2E_EXPECTED_IMAGE must name the image built for this PR")
+
+	g.Eventually(func(g Gomega) {
+		deploy := &appsv1.Deployment{}
+		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ft.operatorDeploy), deploy)).To(Succeed())
+		g.Expect(support.VerifyContainerImage(deploy, "manager", expectedImage)).To(Succeed())
+	}).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(Succeed())
 }
 
 // testPlatformManifests validates the platform type chain end to end: the

@@ -84,7 +84,7 @@ test-integration: test-integration-setup test-integration-run ## Run integration
 
 .PHONY: test-e2e-run
 test-e2e-run: ## Run e2e tests only (operator must already be deployed).
-	OPERATOR_NAMESPACE="$(OPERATOR_NAMESPACE)" go test -count=1 -ldflags "$(LDFLAGS)" ./test/e2e/ -tags=e2e -v -timeout 5m -failfast
+	E2E_EXPECTED_IMAGE="$(E2E_EXPECTED_IMAGE)" OPERATOR_NAMESPACE="$(OPERATOR_NAMESPACE)" go test -count=1 -ldflags "$(LDFLAGS)" ./test/e2e/ -tags=e2e -v -timeout 5m -failfast
 
 .PHONY: test-e2e-setup
 test-e2e-setup: ## Prepare the cluster for e2e tests.
@@ -191,6 +191,8 @@ container-push: docker-push ## Alias for docker-push.
 HELM_NAMESPACE ?= opendatahub-feast-system
 HELM_RELEASE   ?= opendatahub-feast-operator
 OPERATOR_NAMESPACE ?= $(HELM_NAMESPACE)
+RESOLVE_IMAGE_REF ?= 1
+E2E_EXPECTED_IMAGE ?= $(shell CONTAINER_TOOL="$(CONTAINER_TOOL)" bash ./hack/scripts/resolve-image-ref.sh "$(IMG)" 2>/dev/null)
 INTEGRATION_TEST_NAMESPACE ?= integration-test
 HELM_EXTRA_ARGS ?=
 
@@ -238,7 +240,11 @@ endif
 
 .PHONY: deploy-helm
 deploy-helm: ## Deploy controller via Helm chart.
-	@resolved_img="$$(bash ./hack/scripts/resolve-image-ref.sh "$(IMG)")"; \
+	@if [ "$(RESOLVE_IMAGE_REF)" = "1" ]; then \
+		resolved_img="$$(bash ./hack/scripts/resolve-image-ref.sh "$(IMG)")"; \
+	else \
+		resolved_img="$(IMG)"; \
+	fi; \
 		if [ -z "$$resolved_img" ]; then \
 			echo "ERROR: empty image reference (IMG='$(IMG)')" >&2; exit 1; \
 		fi; \
