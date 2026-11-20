@@ -133,10 +133,53 @@ def containerfile_manifest_dir(path):
     return matches[-1].rstrip("/") if matches else None
 
 
-def chart_manifest_paths(path):
-    """One (deployment, copy source, copy destination, MANIFESTS_PATH) tuple.
+def normalize_mount_path(path):
+    return (path or "").rstrip("/") or "/"
 
-    A tuple per Deployment, not one shared set of variables. Overwriting a
+
+def parse_manifest_copy(argv):
+    """Parse the supported recursive cp form used to populate the manifest volume."""
+    if not argv or os.path.basename(argv[0]) != "cp":
+        return None
+
+    recursive = False
+    options_done = False
+    operands = []
+    for arg in argv[1:]:
+        if not options_done and arg == "--":
+            options_done = True
+            continue
+        if not options_done and arg.startswith("-"):
+            if arg in {"-r", "-R", "--recursive"}:
+                recursive = True
+                continue
+            return None
+        operands.append(arg)
+
+    if not recursive or len(operands) != 2:
+        return None
+
+    source, destination = operands
+    if not source.endswith("/.") or not destination.startswith("/"):
+        return None
+    return source[:-2].rstrip("/"), normalize_mount_path(destination)
+
+
+def mount_for_path(container, path):
+    """Return (volume name, normalized mount path) for a container mount."""
+    wanted = normalize_mount_path(path)
+    for mount in container.get("volumeMounts") or []:
+        name = mount.get("name")
+        mount_path = mount.get("mountPath")
+        if name and mount_path and normalize_mount_path(mount_path) == wanted:
+            return name, normalize_mount_path(mount_path)
+    return None
+
+
+def chart_manifest_paths(path):
+    """One manifest-volume contract record per Deployment with a manager.
+
+    A record per Deployment, not one shared set of variables. Overwriting a
     single set meant only the last Deployment reached the contract, so a second
     Deployment could hide a wrong path in the first - the RHOAIENG-99568
     failure class this check exists to catch.
@@ -147,22 +190,23 @@ def chart_manifest_paths(path):
         if spec is None:
             continue
 
-        manager_found = False
+        manager = None
         env_value = None
         # The operator's configuration is the manager container's. A sidecar
         # that also sets the variable does not change what the operator reads.
         for container in spec.get("containers") or []:
             if container.get("name") != "manager":
                 continue
-            manager_found = True
+            manager = container
             for entry in container.get("env") or []:
                 if entry.get("name") == "ODH_MODULE_OPERATOR_MANIFESTS_PATH":
                     env_value = entry.get("value")
 
-        if not manager_found:
+        if manager is None:
             continue
 
         source = destination = None
+        copier_mount = manager_mount = None
         # Only the copy-manifests init container populates the volume. `cp`
         # must be the executable: `command: [echo]` with "cp" in args copies
         # nothing even though it mentions every path.
@@ -173,14 +217,24 @@ def chart_manifest_paths(path):
         )
         if copier is not None:
             argv = list(copier.get("command") or []) + list(copier.get("args") or [])
-            if argv and os.path.basename(argv[0]) == "cp":
-                operands = [arg for arg in argv[1:] if not arg.startswith("-")]
-                pair = operands[:2]
-                if len(pair) == 2 and pair[0].endswith("/.") and pair[1].startswith("/"):
-                    source, destination = pair[0][:-2].rstrip("/"), pair[1].rstrip("/")
+            parsed = parse_manifest_copy(argv)
+            if parsed:
+                source, destination = parsed
+                copier_mount = mount_for_path(copier, destination)
+                if env_value:
+                    manager_mount = mount_for_path(manager, env_value)
 
         name = (document.get("metadata") or {}).get("name") or "<unnamed>"
-        found.append((name, source, destination, env_value))
+        found.append(
+            {
+                "name": name,
+                "source": source,
+                "destination": destination,
+                "env_value": env_value,
+                "copier_mount": copier_mount,
+                "manager_mount": manager_mount,
+            }
+        )
     return found
 
 
@@ -194,10 +248,14 @@ def manifest_path_contract(containerfile, chart_deployment):
     if not deployments:
         problems.append(f"{chart_deployment}: no container named manager in a Deployment")
 
-    for name, source, destination, env_value in deployments:
+    for deployment in deployments:
+        name = deployment["name"]
+        source = deployment["source"]
+        destination = deployment["destination"]
+        env_value = deployment["env_value"]
         where = f"{chart_deployment}: Deployment {name}"
         if not source or not destination:
-            problems.append(f"{where}: no 'cp -r <dir>/. <dir>/' init container found")
+            problems.append(f"{where}: no supported recursive 'cp <dir>/. <dir>/' init container found")
             continue
         if not env_value:
             problems.append(
@@ -205,6 +263,22 @@ def manifest_path_contract(containerfile, chart_deployment):
                 "ODH_MODULE_OPERATOR_MANIFESTS_PATH"
             )
             continue
+        if not deployment["copier_mount"]:
+            problems.append(
+                f"{where}: the copy-manifests init container does not mount {destination}"
+            )
+            continue
+        if not deployment["manager_mount"]:
+            problems.append(f"{where}: the manager container does not mount {env_value}")
+            continue
+        if deployment["copier_mount"] != deployment["manager_mount"]:
+            copier_volume, copier_path = deployment["copier_mount"]
+            manager_volume, manager_path = deployment["manager_mount"]
+            problems.append(
+                f"{where}: copy-manifests mounts {copier_volume} at {copier_path}, "
+                f"but manager mounts {manager_volume} at {manager_path}; "
+                "they must use the same volume and mount path"
+            )
         if image_dir and source != image_dir:
             problems.append(
                 f"{where}: chart copies from {source} but the image ships manifests to {image_dir}"
@@ -249,11 +323,11 @@ def main():
         args.containerfile, args.chart_deployment
     )
     print(f"image ships manifests to : {image_dir}")
-    for name, source, destination, env_value in deployments:
-        print(f"Deployment {name}")
-        print(f"  chart copies from      : {source}")
-        print(f"  chart copies to        : {destination}")
-        print(f"  operator reads         : {env_value}")
+    for deployment in deployments:
+        print(f"Deployment {deployment['name']}")
+        print(f"  chart copies from      : {deployment['source']}")
+        print(f"  chart copies to        : {deployment['destination']}")
+        print(f"  operator reads         : {deployment['env_value']}")
     for problem in problems:
         print(problem, file=sys.stderr)
     return 1 if problems else 0

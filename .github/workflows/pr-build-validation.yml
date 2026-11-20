@@ -85,7 +85,7 @@ jobs:
           # how the suite stops being run without anyone noticing.
           # `.*\.go$` catches Go outside the listed directories (tools/, for
           # example); the hermetic preflight builds ./... and would see it.
-          RELEVANT='^(api/|cmd/|internal/|pkg/|config/|hack/|test/e2e/|test/support/|Containerfile|Makefile|go\.(mod|sum)|\.dockerignore|\.tekton/|scripts/(validate-build(_test)?\.sh|pr-validation-summary(_test)?\.sh|classify-e2e-failure(_test)?\.sh|manifest_contract\.py)|\.github/workflows/pr-build-validation\.yml|.*\.go$)'
+          RELEVANT='^(api/|cmd/|internal/|pkg/|config/|hack/|test/e2e/|test/support/|Containerfile|Makefile|go\.(mod|sum)|\.dockerignore|\.tekton/|scripts/(validate-build(_test)?\.sh|pr-validation-summary(_test)?\.sh|classify-e2e-failure(_test)?\.sh|manifest_contract(_test)?\.py|requirements-validation\.txt)|\.github/workflows/pr-build-validation\.yml|.*\.go$)'
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -139,8 +139,8 @@ jobs:
       - name: Install PyYAML
         run: |
           set -euo pipefail
-          python3 -m pip install --disable-pip-version-check --user pyyaml \
-            || sudo apt-get install -y python3-yaml
+          python3 -m pip install --disable-pip-version-check --user \
+            --require-hashes -r scripts/requirements-validation.txt
 
       - name: Validate build inputs
         run: |
@@ -153,6 +153,7 @@ jobs:
           ./scripts/validate-build_test.sh
           ./scripts/pr-validation-summary_test.sh
           ./scripts/classify-e2e-failure_test.sh
+          python3 scripts/manifest_contract_test.py
 
   hermetic-preflight:
     name: Hermetic Build Preflight
@@ -171,8 +172,8 @@ jobs:
       - name: Install PyYAML
         run: |
           set -euo pipefail
-          python3 -m pip install --disable-pip-version-check --user pyyaml \
-            || sudo apt-get install -y python3-yaml
+          python3 -m pip install --disable-pip-version-check --user \
+            --require-hashes -r scripts/requirements-validation.txt
 
       - name: Read the Go version pinned by the builder image
         id: builder
@@ -245,8 +246,8 @@ jobs:
       - name: Install PyYAML
         run: |
           set -euo pipefail
-          python3 -m pip install --disable-pip-version-check --user pyyaml \
-            || sudo apt-get install -y python3-yaml
+          python3 -m pip install --disable-pip-version-check --user \
+            --require-hashes -r scripts/requirements-validation.txt
 
       - name: Validate kustomize builds, schemas, and RBAC subjects
         run: |
@@ -303,8 +304,8 @@ jobs:
       - name: Install PyYAML
         run: |
           set -euo pipefail
-          python3 -m pip install --disable-pip-version-check --user pyyaml \
-            || sudo apt-get install -y python3-yaml
+          python3 -m pip install --disable-pip-version-check --user \
+            --require-hashes -r scripts/requirements-validation.txt
 
       - name: Render the chart and regenerate it from source
         env:
@@ -343,8 +344,8 @@ jobs:
       - name: Install PyYAML
         run: |
           set -euo pipefail
-          python3 -m pip install --disable-pip-version-check --user pyyaml \
-            || sudo apt-get install -y python3-yaml
+          python3 -m pip install --disable-pip-version-check --user \
+            --require-hashes -r scripts/requirements-validation.txt
 
       - name: Build and inspect the image
         run: |
