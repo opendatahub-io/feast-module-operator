@@ -71,15 +71,51 @@ make helm
 `manifests-config.yaml`. It is rendered and applied by the platform; it is not
 installed with `helm install`.
 
-If you do install it with Helm, use a namespace Helm owns. The chart uses the
-same object names as `kustomize build config/default`, so a namespace that was
-previously populated with `kubectl apply -k config/default` already holds the
-NetworkPolicies without Helm ownership metadata, and Helm refuses to adopt them.
-Remove them first:
+If you install it with Helm, prefer a dedicated release namespace. The chart
+uses the same object identities as `kustomize build config/default`, so a
+namespace populated by Kustomize needs a complete ownership migration rather
+than partial deletion. The chart manages these overlapping resources:
+
+```text
+Deployment/opendatahub-feast-operator
+ConfigMap/odh-data-config
+ServiceAccount/opendatahub-feast-operator
+Service/opendatahub-feast-metrics-service
+Role/opendatahub-feast-leader-election-role
+RoleBinding/opendatahub-feast-leader-election-rolebinding
+NetworkPolicy/allow-egress
+NetworkPolicy/allow-metrics-traffic
+ClusterRole/opendatahub-feast-components-feastoperator-admin-role
+ClusterRole/opendatahub-feast-components-feastoperator-editor-role
+ClusterRole/opendatahub-feast-components-feastoperator-viewer-role
+ClusterRole/opendatahub-feast-manager-role
+ClusterRole/opendatahub-feast-metrics-auth-role
+ClusterRole/opendatahub-feast-metrics-reader
+ClusterRoleBinding/opendatahub-feast-manager-rolebinding
+ClusterRoleBinding/opendatahub-feast-metrics-auth-rolebinding
+```
+
+Helm 4.2 or newer can adopt the existing objects in place with
+`--take-ownership`, which keeps `allow-metrics-traffic` active throughout the
+migration:
 
 ```bash
-kubectl -n <namespace> delete networkpolicy allow-egress allow-metrics-traffic
+release=opendatahub-feast-operator
+namespace=opendatahub-feast-system
+helm upgrade --install "$release" config/chart \
+  --namespace "$namespace" \
+  --create-namespace \
+  --take-ownership \
+  --set-string namespace="$namespace"
 ```
+
+Before adopting, verify every listed object is the Feast operator installation
+in that namespace and is not independently managed or shared with another
+controller. `--take-ownership` adds Helm ownership metadata to all overlapping
+objects, and a later `helm uninstall` deletes them. The namespace and CRD are
+not adopted this way: Helm can install into the existing namespace, and an
+existing CRD from `config/crd/bases` is reused because the chart declares it
+under `crds/`. Do not delete any listed objects first.
 
 ## Architecture
 
