@@ -73,7 +73,7 @@ if [ "$failed" = "true" ]; then
   echo "❌ Blocking validations failed, or the expected-failure leg did not fail. Check the individual job logs above."
   if [ "$e2e_rhoai_outcome" = "success" ]; then
     echo "❌ Operator e2e (rhoai) unexpectedly passed; remove the expected-failure handling before merging."
-  elif [ "$e2e_rhoai_outcome" = "failure" ]; then
+  elif [ "$e2e_rhoai_outcome" = "failure" ] && [ "$e2e_rhoai_classification" != "$expected_rhoai_classification" ]; then
     echo "❌ Operator e2e (rhoai) failed without the documented upstream signature (classification: ${e2e_rhoai_classification})."
   fi
   exit 1

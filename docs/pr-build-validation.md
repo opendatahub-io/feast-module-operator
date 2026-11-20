@@ -22,6 +22,10 @@ The dockerfile and build context always come from the PipelineRun params, so a
 PR that points Konflux at a different containerfile cannot pass here by
 validating `Containerfile` instead.
 
+The workflow installs Python dependencies from the hash-locked
+`scripts/requirements-validation.txt`; there is no unpinned package-manager
+fallback.
+
 ## What each job covers
 
 | Job | Catches |
@@ -80,18 +84,24 @@ than matrix legs. The `odh` job is blocking. The `rhoai` job runs and is
 displayed as a failed job, but it is non-blocking only when its pre-cleanup
 evidence contains the exact known upstream signature: the operand Deployment
 `feast-operator-controller-manager` and
-`flag provided but not defined: -metrics-cert-path`. Any other RHOAI failure,
-missing evidence, or an unexpected pass fails the aggregate. The summary reads
-the rhoai E2E step outcome and classifier result, not the job result hidden by
-`continue-on-error`, so a failure can never be shown as success.
+`flag provided but not defined: -metrics-cert-path`. The evidence must also show
+exactly one failed leaf, `TestFeastOperator/foundation/should become ready`; an
+operator-image mismatch, an unrelated failed assertion, missing evidence, or an
+unexpected pass fails the aggregate. The summary reads the rhoai E2E step
+outcome and classifier result, not the job result hidden by `continue-on-error`,
+so a failure can never be shown as success.
 
-The suite writes current and previous operand pod logs plus the operand
-Deployment spec to `E2E_FAILURE_EVIDENCE` before its cleanup deletes the
-`FeastOperator` CR. That ordering matters: the operand ServiceAccount is
-owner-referenced by the CR, so post-test diagnostics can show a missing
-ServiceAccount or mount failure after teardown. Those messages are cleanup
-artifacts, not evidence of the upstream flag failure and not an accepted
-signature.
+The suite writes the failed leaf, current and previous operand pod logs, and the
+operand Deployment spec to `E2E_FAILURE_EVIDENCE` before its cleanup deletes
+the `FeastOperator` CR. Log responses are streamed and byte-bounded. That
+ordering matters: the operand ServiceAccount is owner-referenced by the CR, so
+post-test diagnostics can show a missing ServiceAccount or mount failure after
+teardown. Those messages are cleanup artifacts, not evidence of the upstream
+flag failure and not an accepted signature.
+
+Kind and registry names are unique per run by default. Teardown deletes only
+resources created by that run, and `CONTAINER_TOOL` also selects Kind's
+container provider.
 
 The `rhoai` exception remains until
 [opendatahub-io/feast#312](https://github.com/opendatahub-io/feast/pull/312)
