@@ -38,6 +38,11 @@ all: build
 help: ## Display this help.
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
 
+# Default image recorded in the generated Helm chart values. The chart ships to
+# the platform operator, so it uses the published image rather than the local
+# development image in config/manager/kustomization.yaml.
+HELM_IMAGE ?= quay.io/opendatahub/odh-feast-module-operator:odh-stable
+
 ##@ Development
 
 .PHONY: manifests
@@ -219,7 +224,7 @@ endif
 .PHONY: helm
 helm: manifests generate ## Generate Helm chart from kustomize output.
 	rm -rf config/chart
-	$(KUSTOMIZE) build config/default | go run ./cmd/main.go chartgen --output config/chart
+	$(KUSTOMIZE) build config/default | go run ./cmd/main.go chartgen --output config/chart --image "$(HELM_IMAGE)"
 
 .PHONY: helm-status
 helm-status: ## Show Helm release status.

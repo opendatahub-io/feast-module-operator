@@ -78,6 +78,28 @@ func writeHelpersTpl(path string) error {
 	return os.WriteFile(path, []byte(helpersTpl), 0o644)
 }
 
+// upgradeGatesTpl renders the platform upgrade-gate ConfigMap. Values.UpgradeGates
+// exists in the schema, so the template that consumes it has to be generated too.
+const upgradeGatesTpl = `{{- if .Values.upgradeGates }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: feastoperator-upgrade-gates
+  namespace: {{ default .Release.Namespace .Values.namespace }}
+  labels:
+    platform.opendatahub.io/upgrade-gate: "true"
+data:
+  {{- range $key, $val := .Values.upgradeGates }}
+  {{ $key | quote }}: {{ $val | quote }}
+  {{- end }}
+{{- end }}
+`
+
+// writeUpgradeGatesTpl writes the upgrade-gate ConfigMap template.
+func writeUpgradeGatesTpl(path string) error {
+	return os.WriteFile(path, []byte(upgradeGatesTpl), 0o644)
+}
+
 // writeChartYAML writes a Chart.yaml file.
 func writeChartYAML(
 	path string,
