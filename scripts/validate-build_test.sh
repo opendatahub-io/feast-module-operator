@@ -20,4 +20,13 @@ if [[ "$actual" != "$expected" ]]; then
   exit 1
 fi
 
+image_repo='localhost:5001/konflux-sim/feast-module-operator'
+image_ref="${image_repo}:e678dbb3dcd8"
+is_resolved_pr_image "$image_ref" "$image_repo" "$image_ref"
+is_resolved_pr_image "$image_ref" "$image_repo" "$image_repo@sha256:a4d595f8d97e"
+if is_resolved_pr_image "$image_ref" "$image_repo" 'quay.io/opendatahub/odh-feast-module-operator:odh-stable'; then
+  echo 'default operator image was accepted as the PR image' >&2
+  exit 1
+fi
+
 printf 'validate-build helper tests passed\n'

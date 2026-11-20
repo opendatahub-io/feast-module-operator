@@ -74,6 +74,14 @@ format_tolerated_drift() {
   awk -v base="$base_ref" '{ print "   tolerated (already stale on " base "): " $0 }'
 }
 
+is_resolved_pr_image() {
+  local image_ref="$1" image_repo="$2" resolved="$3"
+  case "$resolved" in
+    "$image_ref" | "$image_repo"@sha256:*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     err "required command not found: $1"
@@ -782,8 +790,9 @@ YAML
   fi
   pass "ServiceMonitor CRD is established"
 
-  local image_ref
-  image_ref="localhost:${E2E_REGISTRY_PORT}/konflux-sim/feast-module-operator:$(git rev-parse --short=12 HEAD)"
+  local image_repo image_ref
+  image_repo="localhost:${E2E_REGISTRY_PORT}/konflux-sim/feast-module-operator"
+  image_ref="${image_repo}:$(git rev-parse --short=12 HEAD)"
   "$CONTAINER_TOOL" tag "$IMAGE" "$image_ref"
   "$CONTAINER_TOOL" push "$image_ref" >/dev/null
   pass "the PR image is pullable at ${image_ref}"
@@ -793,13 +802,10 @@ YAML
   # deploys, not just the mutable tag that was pushed.
   local expected_image
   expected_image="$(CONTAINER_TOOL="$CONTAINER_TOOL" bash ./hack/scripts/resolve-image-ref.sh "$image_ref")"
-  case "$expected_image" in
-    "$image_ref" | "$image_ref"@*) ;;
-    *)
-      err "resolved image ${expected_image:-<empty>} is not the PR image ${image_ref}"
-      return 1
-      ;;
-  esac
+  if ! is_resolved_pr_image "$image_ref" "$image_repo" "$expected_image"; then
+    err "resolved image ${expected_image:-<empty>} is not the PR image ${image_ref}"
+    return 1
+  fi
   pass "the e2e will require the operator Deployment to run ${expected_image}"
 
   local platform
