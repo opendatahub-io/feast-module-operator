@@ -1,0 +1,143 @@
+# PR build validation
+
+`.github/workflows/pr-build-validation.yml` simulates the Konflux pull-request
+build defined by `.tekton/odh-feast-module-operator-pull-request.yaml` and checks
+the contracts that a `go build` cannot see.
+
+Run the same checks locally with `scripts/validate-build.sh`.
+
+```bash
+./scripts/validate-build.sh static      # PipelineRun inputs, Containerfile, manifest path contract
+./scripts/validate-build.sh hermetic    # go.mod builds with GOPROXY=off
+./scripts/validate-build.sh manifests   # kustomize entry points, schemas, RBAC subjects
+./scripts/validate-build.sh chart       # helm render + regenerate-and-diff against `make helm`
+./scripts/validate-build.sh image       # build the image, run it, assert the manifests ship
+./scripts/validate-build.sh e2e         # build/push the PR image, deploy it to Kind, run the e2e suite
+./scripts/validate-build.sh all
+./scripts/validate-build.sh target      # dockerfile + build context from the PipelineRun
+./scripts/validate-build.sh builder-go  # Go version the Containerfile's builder pins
+```
+
+The dockerfile and build context always come from the PipelineRun params, so a
+PR that points Konflux at a different containerfile cannot pass here by
+validating `Containerfile` instead.
+
+The workflow installs Python dependencies from the hash-locked
+`scripts/requirements-validation.txt`; there is no unpinned package-manager
+fallback.
+
+## What each job covers
+
+| Job | Catches |
+|-----|---------|
+| Static Validation Checks | A PipelineRun that points at a missing Containerfile or path, a `COPY` whose source is not in the build context, an image that stops shipping `config/manifests/`, a chart and image that disagree about where manifests live, duplicate env var names |
+| Hermetic Build Preflight | A module set that only resolves with the network up, a `go.mod` that needs a newer toolchain than the builder image provides |
+| Validate Manifests | A kustomize entry point that no longer builds, a built-in `kind`/`apiVersion` typo, an RBAC binding that names a ServiceAccount the manifests never create |
+| Validate Helm Chart | A chart that renders the wrong resources, and `config/chart` drifting from `make helm` |
+| Build Container Image | A Containerfile that builds a binary the runtime image cannot start, or an image that ships no `manifests/feastoperator/` |
+| Operator e2e | A PR-built image that deploys but cannot run the operator, a live Deployment that runs a different image than the one this PR pushed, or a platform overlay whose operands never become Ready |
+
+## Why the chart check exists
+
+`config/chart` is generated (`make helm`) from `config/default` and is the path
+`opendatahub-operator` consumes through `manifests-config.yaml`. The repository
+CI regenerates CRDs and deepcopy code, but nothing regenerates or verifies the
+chart, so a kustomize change can ship a chart that does not contain it. That is
+the failure class behind RHOAIENG-96436 (odh-feast-operator manifests out of
+sync, an RC blocker).
+
+The check fails when a pull request introduces drift on a generated file that
+is clean on the base ref. Because `main` itself can be behind on regeneration,
+the base ref is regenerated as well and the two sets of drifted files are
+compared:
+
+| Situation | Result |
+| --- | --- |
+| `config/chart` matches `make helm` | pass |
+| Drift exists, and the base ref drifts the same files | warning, pass |
+| Drift exists and the base ref does not drift the same files | fail |
+| No base ref supplied (for example a local run) | fail |
+
+The middle row is the only tolerated case, and it is a subset rule: the check
+compares the *names* of the drifted files, not the size of the drift. A pull
+request that adds drift to a file the base ref already drifts on passes,
+because that file name is already in the tolerated set. What it cannot do is
+push drift into a file that is clean on the base ref. After the base branch is
+regenerated and this branch rebases, that file becomes new drift here and must
+be regenerated and committed before the check passes.
+
+## Operator e2e
+
+The `operator-e2e-*` jobs are the only checks that run the operator. Each builds
+the image this pull request produces, deploys it to a throwaway Kind cluster,
+applies a `FeatureStore` and runs the repository's own suite against it, so a
+container-level break that leaves every static check green still fails here.
+The suite also reads the live operator Deployment's
+`.spec.template.spec.containers` entry and requires the `manager` image to equal
+the exact image the setup pushed. Readiness alone is not enough to prove the PR
+image was exercised.
+
+`ODH_PLATFORM_TYPE` selects a different overlay (namespace,
+`RELATED_IMAGE_CRON_JOB`, the rbac-proxy image, and `prometheus` plus a
+`ServiceMonitor` on `rhoai`), so `odh` and `rhoai` run as separate jobs rather
+than matrix legs. The `odh` job is blocking. The `rhoai` job runs and is
+displayed as a failed job, but it is non-blocking only when its pre-cleanup
+evidence contains the exact known upstream signature: the operand Deployment
+`feast-operator-controller-manager` and
+`flag provided but not defined: -metrics-cert-path`. The evidence must also show
+exactly one failed leaf, `TestFeastOperator/foundation/should become ready`; an
+operator-image mismatch, an unrelated failed assertion, missing evidence, or an
+unexpected pass fails the aggregate. The summary reads the rhoai E2E step
+outcome and classifier result, not the job result hidden by `continue-on-error`,
+so a failure can never be shown as success.
+
+The suite writes the failed leaf, current and previous operand pod logs, and the
+operand Deployment spec to `E2E_FAILURE_EVIDENCE` before its cleanup deletes
+the `FeastOperator` CR. Log responses are streamed and byte-bounded. That
+ordering matters: the operand ServiceAccount is owner-referenced by the CR, so
+post-test diagnostics can show a missing ServiceAccount or mount failure after
+teardown. Those messages are cleanup artifacts, not evidence of the upstream
+flag failure and not an accepted signature.
+
+Kind and registry names are unique per run by default. Teardown deletes only
+resources created by that run, and `CONTAINER_TOOL` also selects Kind's
+container provider.
+
+The `rhoai` exception remains until
+[opendatahub-io/feast#312](https://github.com/opendatahub-io/feast/pull/312)
+lands and the vendored manifest pin moves. The overlay currently passes
+`--metrics-cert-path` to a pinned `quay.io/feastdev/feast-operator` image that
+does not define the flag. Once the pin moves, remove the expected-failure
+handling and make that job blocking and hard-green.
+
+## Why the RBAC subject check exists
+
+A kustomize `namePrefix` rewrites the ServiceAccount name but not the subjects
+of a RoleBinding or ClusterRoleBinding. The operator then starts with an
+identity that has no permissions and crash-loops. That is RHOAIENG-100514 and
+RHOAIENG-100515 (Data module NotReady, DSC never Ready) and RHOAIENG-99631
+(DSC never Ready because rhods-operator renders the feast chart).
+
+## What this does not cover
+
+- **Cross-repository drift.** The image here is consumed by
+  `opendatahub-operator` through `manifests-config.yaml`. A change in this
+  repository that requires a consumer update is not visible from here.
+- **Downstream fork sync.** The `red-hat-data-services` fork is synced
+  separately; this workflow only compares the chart against the sources in this
+  repository.
+- **Reconcile behaviour beyond what the suite asserts.** RHOAIENG-101993 (the
+  reconciler crashing with `is not a WithReleases` after an
+  `odh-platform-utilities` bump) is covered by `operator-e2e-odh` above.
+  `make test-integration` still has no workflow.
+- **Multi-architecture images.** The PipelineRun does not set
+  `build-platforms`, so the shared pipeline produces `linux/x86_64` only.
+  RHOAIENG-79767 was an `ImagePullBackOff` on ppc64le for exactly this reason.
+  The static job warns instead of failing because the fix is a PipelineRun
+  change, not something a PR can infer.
+
+## Skipping
+
+Add `[skip konflux-sim]` to the PR title, or the `skip-konflux-sim` label, to
+skip the run. The summary job reports a skip explicitly; it never reports
+success for checks that did not run.
