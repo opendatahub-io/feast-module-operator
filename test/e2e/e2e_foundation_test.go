@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"testing"
 	"time"
@@ -182,6 +184,70 @@ func (ft *foundationTests) testBecomesReady(t *testing.T) {
 	))
 
 	eventuallyDeploymentReady(t, ft.workloadDeploy)
+}
+
+func (ft *foundationTests) dumpFailureEvidence(t *testing.T) {
+	t.Helper()
+
+	var out io.Writer = os.Stderr
+	evidencePath := os.Getenv("E2E_FAILURE_EVIDENCE")
+	if evidencePath != "" {
+		evidence, err := os.Create(evidencePath)
+		if err != nil {
+			t.Logf("failed to create E2E failure evidence file %s: %v", evidencePath, err)
+		} else {
+			defer evidence.Close()
+			out = io.MultiWriter(os.Stderr, evidence)
+		}
+	}
+
+	fmt.Fprintln(out, "=== e2e failure evidence ===")
+	fmt.Fprintf(out, "platform=%s\n", os.Getenv("ODH_PLATFORM_TYPE"))
+
+	deploy := &appsv1.Deployment{}
+	if err := k8sClient.Get(ctx, client.ObjectKey{
+		Name:      workloadDeployName,
+		Namespace: ft.operatorNamespace,
+	}, deploy); err != nil {
+		fmt.Fprintf(out, "failed to read operand deployment %s: %v\n", workloadDeployName, err)
+	} else {
+		fmt.Fprintf(out, "operand deployment %s\n", deploy.Name)
+		for _, container := range deploy.Spec.Template.Spec.Containers {
+			fmt.Fprintf(out, "operand deployment container %s image=%s args=%q\n", container.Name, container.Image, container.Args)
+		}
+	}
+
+	pods, err := kubeClient.CoreV1().Pods(ft.operatorNamespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "control-plane=controller-manager",
+	})
+	if err != nil {
+		fmt.Fprintf(out, "failed to list operand pods: %v\n", err)
+		return
+	}
+
+	tail := int64(200)
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		fmt.Fprintf(out, "pod %s phase=%s reason=%s\n", pod.Name, pod.Status.Phase, pod.Status.Reason)
+		for _, container := range pod.Spec.Containers {
+			for _, previous := range []bool{false, true} {
+				logType := "current"
+				if previous {
+					logType = "previous"
+				}
+				logs, logErr := kubeClient.CoreV1().Pods(ft.operatorNamespace).GetLogs(pod.Name, &corev1.PodLogOptions{
+					Container: container.Name,
+					Previous:  previous,
+					TailLines: &tail,
+				}).DoRaw(ctx)
+				if logErr != nil {
+					fmt.Fprintf(out, "--- pod %s/%s %s logs unavailable: %v ---\n", pod.Name, container.Name, logType, logErr)
+					continue
+				}
+				fmt.Fprintf(out, "--- pod %s/%s %s logs ---\n%s\n", pod.Name, container.Name, logType, logs)
+			}
+		}
+	}
 }
 
 func (ft *foundationTests) testDeploymentsAvailable(t *testing.T) {
