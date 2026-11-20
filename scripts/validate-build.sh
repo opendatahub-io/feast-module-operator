@@ -40,8 +40,8 @@ set -euo pipefail
 #   E2E_EXPECTED_IMAGE   Image reference the live operator Deployment must run
 #   E2E_FAILURE_EVIDENCE Optional file where the e2e suite writes operand logs
 #                        before its cleanup deletes the FeastOperator CR
-#   E2E_CLUSTER_NAME     Kind cluster name (default konflux-sim)
-#   E2E_REGISTRY_NAME    Local registry container name (default konflux-sim-registry)
+#   E2E_CLUSTER_NAME     Kind cluster name (default unique per run)
+#   E2E_REGISTRY_NAME    Local registry container name (default unique per run)
 #   E2E_REGISTRY_PORT    Local registry port on 127.0.0.1 (default 5001)
 
 MODE="${1:-all}"
@@ -76,11 +76,31 @@ format_tolerated_drift() {
   awk -v base="$base_ref" '{ print "   tolerated (already stale on " base "): " $0 }'
 }
 
+chart_drift_supported() {
+  [ "${CHART_DIR%/}" = "config/chart" ]
+}
+
+listing_has_manifest_file() {
+  grep -Eq '^manifests/feastoperator/[^/]+/.+'
+}
+
 is_resolved_pr_image() {
   local image_ref="$1" image_repo="$2" resolved="$3"
+  local digest prefix="${image_repo}@sha256:"
   case "$resolved" in
-    "$image_ref" | "$image_repo"@sha256:*) return 0 ;;
-    *) return 1 ;;
+    "$image_ref")
+      return 0
+      ;;
+    "$prefix"*)
+      digest="${resolved#"$prefix"}"
+      if [ "${#digest}" -ne 64 ] || [[ "$digest" == *[!0-9a-f]* ]]; then
+        return 1
+      fi
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
   esac
 }
 
@@ -325,8 +345,17 @@ regenerate_chart() {
   fi
 
   if [ -d "$dest/$CHART_DIR" ]; then
-    cp -R "$dest/$CHART_DIR" "$tmp/$label-committed"
+    if ! cp -R "$dest/$CHART_DIR" "$tmp/$label-committed"; then
+      err "could not snapshot the committed $CHART_DIR from $ref"
+      return 1
+    fi
+    if [ ! -d "$tmp/$label-committed" ] ||
+       [ -z "$(find "$tmp/$label-committed" -type f -print -quit)" ]; then
+      err "the committed $CHART_DIR snapshot from $ref is incomplete"
+      return 1
+    fi
   else
+    warn "$ref has no $CHART_DIR; using an empty committed chart snapshot"
     mkdir -p "$tmp/$label-committed"
   fi
 
@@ -385,6 +414,11 @@ check_chart_drift() {
 
 run_chart_drift() {
   local tmp="$1"
+
+  if ! chart_drift_supported; then
+    err "chart drift regenerates config/chart; CHART_DIR=${CHART_DIR} cannot be verified by this mode"
+    return 1
+  fi
 
   info "Checking whether config/chart matches 'make helm' output..."
 
@@ -642,15 +676,19 @@ validate_image() {
   "$CONTAINER_TOOL" create --platform "$PLATFORM" --name "$container" "$IMAGE" >/dev/null
   trap '"$CONTAINER_TOOL" rm -f "${container:-}" >/dev/null 2>&1 || true' RETURN
 
-  local listing
-  listing="$("$CONTAINER_TOOL" export "$container" | tar -tf - 2>/dev/null || true)"
+  local listing status=0
+  listing="$("$CONTAINER_TOOL" export "$container" | tar -tf - 2>/dev/null)" || status=$?
   "$CONTAINER_TOOL" rm -f "$container" >/dev/null 2>&1 || true
 
-  if ! printf '%s\n' "$listing" | grep -q '^manifests/feastoperator/'; then
-    err "the image does not contain manifests/feastoperator/; the operator would start with no overlays"
+  if [ "$status" -ne 0 ]; then
+    err "could not export $IMAGE to inspect its manifests (exit $status)"
     exit 1
   fi
-  pass "the image ships manifests/feastoperator/"
+  if ! printf '%s\n' "$listing" | listing_has_manifest_file; then
+    err "the image contains no file under manifests/feastoperator/; the operator would start with no overlays"
+    exit 1
+  fi
+  pass "the image ships files under manifests/feastoperator/"
 }
 
 # ---------------------------------------------------------------------------
@@ -666,8 +704,8 @@ validate_image() {
 # honest without publishing anything.
 # ---------------------------------------------------------------------------
 
-E2E_CLUSTER_NAME="${E2E_CLUSTER_NAME:-konflux-sim}"
-E2E_REGISTRY_NAME="${E2E_REGISTRY_NAME:-konflux-sim-registry}"
+E2E_CLUSTER_NAME="${E2E_CLUSTER_NAME:-}"
+E2E_REGISTRY_NAME="${E2E_REGISTRY_NAME:-}"
 E2E_REGISTRY_PORT="${E2E_REGISTRY_PORT:-5001}"
 # Pinned by digest: this container runs with container-engine access on the
 # runner, and it is the one unpinned artifact left in the e2e path next to a
@@ -678,13 +716,21 @@ E2E_NAMESPACE="${E2E_NAMESPACE:-opendatahub-feast-system}"
 E2E_SERVICEMONITOR_CRDS="${E2E_SERVICEMONITOR_CRDS:-https://github.com/prometheus-operator/prometheus-operator/releases/download/v0.80.1/stripped-down-crds.yaml}"
 E2E_SERVICEMONITOR_CRDS_SHA256="${E2E_SERVICEMONITOR_CRDS_SHA256:-2948db44666044f0f5639649dc21b13bd403545562797c3a4d9bd76efab9e8dd}"
 
+kind_cmd() {
+  KIND_EXPERIMENTAL_PROVIDER="$CONTAINER_TOOL" kind "$@"
+}
+
 e2e_teardown() {
   if [ "${E2E_KEEP_CLUSTER:-0}" = "1" ]; then
     warn "E2E_KEEP_CLUSTER=1: leaving cluster ${E2E_CLUSTER_NAME} and registry in place"
     return 0
   fi
-  kind delete cluster --name "$E2E_CLUSTER_NAME" >/dev/null 2>&1 || true
-  "$CONTAINER_TOOL" rm -f "$E2E_REGISTRY_NAME" >/dev/null 2>&1 || true
+  if [ "${E2E_CLUSTER_CREATED:-0}" = "1" ]; then
+    kind_cmd delete cluster --name "$E2E_CLUSTER_NAME" >/dev/null 2>&1 || true
+  fi
+  if [ "${E2E_REGISTRY_CREATED:-0}" = "1" ]; then
+    "$CONTAINER_TOOL" rm -f "$E2E_REGISTRY_NAME" >/dev/null 2>&1 || true
+  fi
 }
 
 e2e_dump_diagnostics() {
@@ -717,25 +763,52 @@ validate_e2e() {
   require_cmd make
   require_cmd curl
 
+  case "$CONTAINER_TOOL" in
+    docker | podman) ;;
+    *)
+      err "CONTAINER_TOOL must be docker or podman for Kind; got ${CONTAINER_TOOL}"
+      return 1
+      ;;
+  esac
+
+  local -a platforms
+  read -r -a platforms <<< "$E2E_PLATFORMS"
+  if [ "${#platforms[@]}" -eq 0 ]; then
+    err "E2E_PLATFORMS selects no platform; refusing to skip the e2e suite"
+    return 1
+  fi
+
+  local run_id
+  run_id="${E2E_RUN_ID:-$(date +%Y%m%d%H%M%S)-$$}"
+  E2E_CLUSTER_NAME="${E2E_CLUSTER_NAME:-konflux-sim-${run_id}}"
+  E2E_REGISTRY_NAME="${E2E_REGISTRY_NAME:-konflux-sim-registry-${run_id}}"
+
   # Never touch the caller's kubeconfig. A failed `kind create` must not leave
   # `make deploy-helm` pointed at whatever cluster the shell already knew about.
-  local kubeconfig
-  kubeconfig="$(mktemp)"
-  export KUBECONFIG="$kubeconfig"
+  # Keep the directory path global so the EXIT trap can still find it after
+  # this function returns.
+  E2E_TMP_DIR="$(mktemp -d)"
+  export KUBECONFIG="$E2E_TMP_DIR/kubeconfig"
+  E2E_CLUSTER_CREATED=0
+  E2E_REGISTRY_CREATED=0
 
-  trap 'e2e_teardown; rm -f "${kubeconfig:-}"' EXIT
+  trap 'e2e_teardown; rm -rf "${E2E_TMP_DIR:-}"' EXIT
   trap 'exit 130' INT TERM
 
   info "Building the Konflux container image with ${CONTAINER_TOOL}..."
   "$CONTAINER_TOOL" build --platform "$PLATFORM" -f "$CONTAINERFILE" -t "$IMAGE" "$BUILD_CONTEXT"
 
   info "Starting the local registry on 127.0.0.1:${E2E_REGISTRY_PORT}..."
-  "$CONTAINER_TOOL" rm -f "$E2E_REGISTRY_NAME" >/dev/null 2>&1 || true
+  if "$CONTAINER_TOOL" inspect "$E2E_REGISTRY_NAME" >/dev/null 2>&1; then
+    err "registry container ${E2E_REGISTRY_NAME} already exists; choose a unique E2E_REGISTRY_NAME"
+    return 1
+  fi
   "$CONTAINER_TOOL" run -d --name "$E2E_REGISTRY_NAME" \
     -p "127.0.0.1:${E2E_REGISTRY_PORT}:5000" "$E2E_REGISTRY_IMAGE" >/dev/null
+  E2E_REGISTRY_CREATED=1
 
   local kind_config
-  kind_config="$(mktemp)"
+  kind_config="$E2E_TMP_DIR/kind.yaml"
   # Enable containerd's certs.d directory, which is how a node is told about a
   # registry that is not on the public internet. This is kind's documented
   # local-registry setup; the older registry.mirrors key does not apply to
@@ -750,15 +823,24 @@ containerdConfigPatches:
 YAML
 
   info "Creating Kind cluster ${E2E_CLUSTER_NAME}..."
-  kind create cluster --name "$E2E_CLUSTER_NAME" --wait 180s --config "$kind_config"
-  rm -f "$kind_config"
+  local clusters
+  if ! clusters="$(kind_cmd get clusters)"; then
+    err "could not list Kind clusters with provider ${CONTAINER_TOOL}"
+    return 1
+  fi
+  if printf '%s\n' "$clusters" | grep -Fxq "$E2E_CLUSTER_NAME"; then
+    err "Kind cluster ${E2E_CLUSTER_NAME} already exists; choose a unique E2E_CLUSTER_NAME"
+    return 1
+  fi
+  kind_cmd create cluster --name "$E2E_CLUSTER_NAME" --wait 180s --config "$kind_config"
+  E2E_CLUSTER_CREATED=1
 
   # `localhost` inside a node is not the host's localhost, so alias it to the
   # registry container, which the node reaches by name over the kind network.
   "$CONTAINER_TOOL" network connect kind "$E2E_REGISTRY_NAME" >/dev/null 2>&1 || true
   local node registry_dir
   registry_dir="/etc/containerd/certs.d/localhost:${E2E_REGISTRY_PORT}"
-  for node in $(kind get nodes --name "$E2E_CLUSTER_NAME"); do
+  for node in $(kind_cmd get nodes --name "$E2E_CLUSTER_NAME"); do
     "$CONTAINER_TOOL" exec "$node" mkdir -p "$registry_dir"
     printf '[host."http://%s:5000"]\n' "$E2E_REGISTRY_NAME" \
       | "$CONTAINER_TOOL" exec -i "$node" cp /dev/stdin "${registry_dir}/hosts.toml"
@@ -769,12 +851,11 @@ YAML
   # CRD. Platforms ship it; Kind does not.
   info "Installing the prometheus-operator CRDs (the operator owns a ServiceMonitor)..."
   local crd_bundle
-  crd_bundle="$(mktemp)"
+  crd_bundle="$E2E_TMP_DIR/servicemonitor-crds.yaml"
   curl -fsSL -o "$crd_bundle" "$E2E_SERVICEMONITOR_CRDS"
   verify_sha256 "$E2E_SERVICEMONITOR_CRDS_SHA256" "$crd_bundle"
   # Server-side apply: these CRDs exceed the 256 KiB client-side apply limit.
   kubectl apply --server-side -f "$crd_bundle" >/dev/null
-  rm -f "$crd_bundle"
 
   # `kubectl wait --for=condition` reads .status.conditions directly and dies
   # with "accessor error: <nil> is of the type <nil>" when the API server has
@@ -815,7 +896,7 @@ YAML
   pass "the e2e will require the operator Deployment to run ${expected_image}"
 
   local platform
-  for platform in $E2E_PLATFORMS; do
+  for platform in "${platforms[@]}"; do
     info "Running the operator e2e with ODH_PLATFORM_TYPE=${platform}..."
     local -a make_vars=(
       # Pin the exact reference used for the assertion. Passing the tag here
@@ -837,7 +918,7 @@ YAML
       make_vars+=("KUSTOMIZE=$KUSTOMIZE_BIN")
     fi
 
-    if ! CONTAINER_TOOL="$CONTAINER_TOOL" make test-e2e ${make_vars[@]+"${make_vars[@]}"}; then
+    if ! CONTAINER_TOOL="$CONTAINER_TOOL" make -j1 test-e2e ${make_vars[@]+"${make_vars[@]}"}; then
       err "operator e2e failed for ODH_PLATFORM_TYPE=${platform}"
       e2e_dump_diagnostics "$platform"
       return 1
