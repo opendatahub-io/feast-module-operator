@@ -34,6 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -76,10 +77,11 @@ const (
 )
 
 var (
-	ctx       context.Context
-	cancel    context.CancelFunc
-	k8sClient client.Client
-	k         *k8sm.Matcher
+	ctx        context.Context
+	cancel     context.CancelFunc
+	k8sClient  client.Client
+	kubeClient kubernetes.Interface
+	k          *k8sm.Matcher
 
 	testScheme = runtime.NewScheme()
 )
@@ -107,6 +109,11 @@ func runTestMain(m *testing.M) int {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: testScheme})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create client: %v\n", err)
+		return 1
+	}
+	kubeClient, err = kubernetes.NewForConfig(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create Kubernetes client: %v\n", err)
 		return 1
 	}
 
@@ -158,6 +165,13 @@ func TestFeastOperator(t *testing.T) {
 	}
 
 	t.Run("foundation", foundation.Execute)
+
+	// Run before t.Cleanup deletes the FeastOperator CR. Owner-reference GC
+	// removes the operand ServiceAccount and Deployment as part of that delete,
+	// so post-test kubectl diagnostics can describe teardown rather than cause.
+	if t.Failed() {
+		foundation.dumpFailureEvidence(t)
+	}
 }
 
 func waitForDeleted(t *testing.T, obj client.Object) {

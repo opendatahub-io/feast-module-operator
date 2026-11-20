@@ -38,6 +38,8 @@ set -euo pipefail
 #   SKIP_IMAGE=1         Skip the image build
 #   E2E_PLATFORMS        Platform types the e2e mode deploys (default "odh rhoai")
 #   E2E_EXPECTED_IMAGE   Image reference the live operator Deployment must run
+#   E2E_FAILURE_EVIDENCE Optional file where the e2e suite writes operand logs
+#                        before its cleanup deletes the FeastOperator CR
 #   E2E_CLUSTER_NAME     Kind cluster name (default konflux-sim)
 #   E2E_REGISTRY_NAME    Local registry container name (default konflux-sim-registry)
 #   E2E_REGISTRY_PORT    Local registry port on 127.0.0.1 (default 5001)
@@ -688,6 +690,7 @@ e2e_teardown() {
 e2e_dump_diagnostics() {
   local platform="$1"
   warn "diagnostics for ODH_PLATFORM_TYPE=${platform} (best effort):"
+  warn "  test cleanup may already have deleted module-owned resources; use E2E_FAILURE_EVIDENCE for pre-cleanup operand logs"
   # `set -e` and pipefail are active in this shell. Without relaxing them the
   # first kubectl that fails (missing CRD, no previous container to log) exits
   # the group and skips every later command, which is the opposite of best
@@ -697,8 +700,11 @@ e2e_dump_diagnostics() {
     kubectl get feastoperator -A -o yaml 2>&1 | head -60
     kubectl get deploy,svc,sa,cm -n "$E2E_NAMESPACE" -o wide 2>&1
     kubectl get events -n "$E2E_NAMESPACE" --sort-by=.lastTimestamp 2>&1 | tail -30
-    kubectl logs -n "$E2E_NAMESPACE" -l control-plane=controller-manager --tail=80 2>&1
-    kubectl logs -n "$E2E_NAMESPACE" -l control-plane=controller-manager --tail=80 --previous 2>&1
+    kubectl logs -n "$E2E_NAMESPACE" -l app.kubernetes.io/name=opendatahub-feast-operator --tail=120 2>&1
+    kubectl -n "$E2E_NAMESPACE" get deployment feast-operator-controller-manager -o yaml 2>&1
+    kubectl -n "$E2E_NAMESPACE" get serviceaccount feast-operator-controller-manager -o yaml 2>&1
+    kubectl logs -n "$E2E_NAMESPACE" -l control-plane=controller-manager --all-containers --tail=120 2>&1
+    kubectl logs -n "$E2E_NAMESPACE" -l control-plane=controller-manager --all-containers --tail=120 --previous 2>&1
     kubectl -n "$E2E_NAMESPACE" describe pod -l control-plane=controller-manager 2>&1 | tail -40
   ) | sed 's/^/   /' || true
 }

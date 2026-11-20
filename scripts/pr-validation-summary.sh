@@ -11,6 +11,9 @@ chart="${CHART:-}"
 image="${IMAGE:-}"
 e2e_odh="${E2E_ODH:-}"
 e2e_rhoai_outcome="${E2E_RHOAI_OUTCOME:-not-run}"
+e2e_rhoai_classification="${E2E_RHOAI_CLASSIFICATION:-missing-evidence}"
+
+expected_rhoai_classification="expected-upstream-metrics-cert-path"
 
 echo "## Konflux Build Simulation Results"
 echo ""
@@ -28,7 +31,12 @@ fi
 failed=false
 case "$e2e_rhoai_outcome" in
   failure)
-    e2e_rhoai="failure (expected; non-blocking)"
+    if [ "$e2e_rhoai_classification" = "$expected_rhoai_classification" ]; then
+      e2e_rhoai="failure (expected upstream --metrics-cert-path signature; non-blocking)"
+    else
+      e2e_rhoai="failure (unexpected: ${e2e_rhoai_classification}; blocking)"
+      failed=true
+    fi
     ;;
   success)
     e2e_rhoai="success (unexpected)"
@@ -65,9 +73,11 @@ if [ "$failed" = "true" ]; then
   echo "❌ Blocking validations failed, or the expected-failure leg did not fail. Check the individual job logs above."
   if [ "$e2e_rhoai_outcome" = "success" ]; then
     echo "❌ Operator e2e (rhoai) unexpectedly passed; remove the expected-failure handling before merging."
+  elif [ "$e2e_rhoai_outcome" = "failure" ]; then
+    echo "❌ Operator e2e (rhoai) failed without the documented upstream signature (classification: ${e2e_rhoai_classification})."
   fi
   exit 1
 fi
 
 echo "✅ All blocking validations passed."
-echo "⚠️ Operator e2e (rhoai) failed as expected (non-blocking until opendatahub-io/feast#312 and the vendored manifest pin move)."
+echo "⚠️ Operator e2e (rhoai) failed with the documented upstream signature: flag provided but not defined: -metrics-cert-path (non-blocking until opendatahub-io/feast#312 and the vendored manifest pin move)."

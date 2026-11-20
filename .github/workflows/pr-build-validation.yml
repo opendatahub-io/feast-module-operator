@@ -85,7 +85,7 @@ jobs:
           # how the suite stops being run without anyone noticing.
           # `.*\.go$` catches Go outside the listed directories (tools/, for
           # example); the hermetic preflight builds ./... and would see it.
-          RELEVANT='^(api/|cmd/|internal/|pkg/|config/|hack/|test/e2e/|test/support/|Containerfile|Makefile|go\.(mod|sum)|\.dockerignore|\.tekton/|scripts/(validate-build(_test)?\.sh|pr-validation-summary(_test)?\.sh|manifest_contract\.py)|\.github/workflows/pr-build-validation\.yml|.*\.go$)'
+          RELEVANT='^(api/|cmd/|internal/|pkg/|config/|hack/|test/e2e/|test/support/|Containerfile|Makefile|go\.(mod|sum)|\.dockerignore|\.tekton/|scripts/(validate-build(_test)?\.sh|pr-validation-summary(_test)?\.sh|classify-e2e-failure(_test)?\.sh|manifest_contract\.py)|\.github/workflows/pr-build-validation\.yml|.*\.go$)'
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -152,6 +152,7 @@ jobs:
           set -euo pipefail
           ./scripts/validate-build_test.sh
           ./scripts/pr-validation-summary_test.sh
+          ./scripts/classify-e2e-failure_test.sh
 
   hermetic-preflight:
     name: Hermetic Build Preflight
@@ -433,6 +434,7 @@ jobs:
     continue-on-error: true
     outputs:
       e2e_outcome: ${{ steps.record_outcome.outputs.e2e_outcome }}
+      e2e_classification: ${{ steps.record_outcome.outputs.e2e_classification }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -480,9 +482,28 @@ jobs:
           GOTOOLCHAIN: local
           E2E_PLATFORMS: rhoai
           HELM_BIN: /usr/local/bin/helm
+          # The suite writes current/previous operand logs before its cleanup
+          # deletes the FeastOperator CR. Post-test diagnostics cannot prove the
+          # cause because owner-reference GC removes the operand SA first.
+          E2E_FAILURE_EVIDENCE: ${{ runner.temp }}/rhoai-e2e-evidence.log
         run: |
           set -euo pipefail
           ./scripts/validate-build.sh e2e
+
+      - name: Classify the expected RHOAI failure
+        id: classify_failure
+        if: always() && steps.e2e.outcome == 'failure'
+        env:
+          E2E_EVIDENCE: ${{ runner.temp }}/rhoai-e2e-evidence.log
+        run: |
+          set -euo pipefail
+          classification="$(./scripts/classify-e2e-failure.sh rhoai "$E2E_EVIDENCE")"
+          echo "classification=${classification}" >> "$GITHUB_OUTPUT"
+          if [ "$classification" != "expected-upstream-metrics-cert-path" ]; then
+            echo "::error::RHOAI e2e failed without the documented upstream --metrics-cert-path signature (classification: ${classification}); the aggregate will fail."
+            exit 1
+          fi
+          echo "::warning::RHOAI e2e failed with the documented upstream --metrics-cert-path signature; non-blocking until opendatahub-io/feast#312 lands and the vendored pin moves."
 
       # Record the step outcome before the job-level continue-on-error hides
       # it from needs.<job>.result. If setup fails before this step, the value
@@ -492,9 +513,11 @@ jobs:
         if: always()
         env:
           E2E_OUTCOME: ${{ steps.e2e.outcome }}
+          E2E_CLASSIFICATION: ${{ steps.classify_failure.outputs.classification }}
         run: |
           set -euo pipefail
           echo "e2e_outcome=${E2E_OUTCOME:-not-run}" >> "$GITHUB_OUTPUT"
+          echo "e2e_classification=${E2E_CLASSIFICATION:-missing-evidence}" >> "$GITHUB_OUTPUT"
 
   summary:
     name: Build Validation Summary
@@ -530,6 +553,7 @@ jobs:
           IMAGE: ${{ needs.image-validation.result }}
           E2E_ODH: ${{ needs.operator-e2e-odh.result }}
           E2E_RHOAI_OUTCOME: ${{ needs.operator-e2e-rhoai.outputs.e2e_outcome }}
+          E2E_RHOAI_CLASSIFICATION: ${{ needs.operator-e2e-rhoai.outputs.e2e_classification }}
         run: |
           set -euo pipefail
           ./scripts/pr-validation-summary.sh

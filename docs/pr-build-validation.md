@@ -75,16 +75,30 @@ image was exercised.
 
 `ODH_PLATFORM_TYPE` selects a different overlay (namespace,
 `RELATED_IMAGE_CRON_JOB`, the rbac-proxy image, and `prometheus` plus a
-`ServiceMonitor` on `rhoai`), so there are separate `odh` and `rhoai` jobs.
-The `odh` job is blocking. The `rhoai` job runs and is displayed as a failure,
-but it is expected-fail and non-blocking until
+`ServiceMonitor` on `rhoai`), so `odh` and `rhoai` run as separate jobs rather
+than matrix legs. The `odh` job is blocking. The `rhoai` job runs and is
+displayed as a failed job, but it is non-blocking only when its pre-cleanup
+evidence contains the exact known upstream signature: the operand Deployment
+`feast-operator-controller-manager` and
+`flag provided but not defined: -metrics-cert-path`. Any other RHOAI failure,
+missing evidence, or an unexpected pass fails the aggregate. The summary reads
+the rhoai E2E step outcome and classifier result, not the job result hidden by
+`continue-on-error`, so a failure can never be shown as success.
+
+The suite writes current and previous operand pod logs plus the operand
+Deployment spec to `E2E_FAILURE_EVIDENCE` before its cleanup deletes the
+`FeastOperator` CR. That ordering matters: the operand ServiceAccount is
+owner-referenced by the CR, so post-test diagnostics can show a missing
+ServiceAccount or mount failure after teardown. Those messages are cleanup
+artifacts, not evidence of the upstream flag failure and not an accepted
+signature.
+
+The `rhoai` exception remains until
 [opendatahub-io/feast#312](https://github.com/opendatahub-io/feast/pull/312)
-lands and the vendored manifest pin moves; the overlay currently passes
+lands and the vendored manifest pin moves. The overlay currently passes
 `--metrics-cert-path` to a pinned `quay.io/feastdev/feast-operator` image that
-does not define the flag. The summary reads the rhoai E2E step outcome, not the
-job result hidden by `continue-on-error`, so a rhoai failure can never be shown
-as success. Once the pin moves, remove the expected-failure handling and make
-that job blocking.
+does not define the flag. Once the pin moves, remove the expected-failure
+handling and make that job blocking and hard-green.
 
 ## Why the RBAC subject check exists
 
