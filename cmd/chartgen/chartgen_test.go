@@ -1,10 +1,15 @@
 package chartgen
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"text/template"
+
+	"github.com/Masterminds/sprig/v3"
+	"sigs.k8s.io/yaml"
 )
 
 const testInput = `apiVersion: apps/v1
@@ -67,6 +72,66 @@ func TestRunGeneratesUpgradeGates(t *testing.T) {
 	}
 	if !strings.Contains(gates, "namespace: {{ default .Release.Namespace .Values.namespace }}") {
 		t.Errorf("upgrade-gates.yaml is missing the chart namespace:\n%s", gates)
+	}
+}
+
+// TestRunGeneratedUpgradeGatesRenderData renders the generated template with a
+// non-empty gate map and checks that YAML-sensitive keys remain strings.
+func TestRunGeneratedUpgradeGatesRenderData(t *testing.T) {
+	out := generate(t, "")
+	gates := readFile(t, filepath.Join(out, templatesDirName, upgradeGatesTplFilename))
+
+	tmpl, err := template.New(upgradeGatesTplFilename).
+		Option("missingkey=error").
+		Funcs(sprig.TxtFuncMap()).
+		Parse(gates)
+	if err != nil {
+		t.Fatalf("parsing upgrade-gates template: %v", err)
+	}
+
+	var rendered bytes.Buffer
+	if err := tmpl.Execute(&rendered, map[string]any{
+		"Release": map[string]any{"Namespace": "release-ns"},
+		"Values": map[string]any{
+			"namespace": "custom-ns",
+			"upgradeGates": map[string]string{
+				"true":   "required",
+				"normal": "enabled",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("rendering upgrade-gates template: %v", err)
+	}
+
+	var configMap struct {
+		Kind     string `json:"kind"`
+		Metadata struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"metadata"`
+		Data map[string]string `json:"data"`
+	}
+	if err := yaml.Unmarshal(rendered.Bytes(), &configMap); err != nil {
+		t.Fatalf("decoding rendered upgrade gates: %v\n%s", err, rendered.String())
+	}
+
+	if configMap.Kind != "ConfigMap" {
+		t.Errorf("kind = %q, want ConfigMap", configMap.Kind)
+	}
+	if configMap.Metadata.Name != "feastoperator-upgrade-gates" {
+		t.Errorf("name = %q, want feastoperator-upgrade-gates", configMap.Metadata.Name)
+	}
+	if configMap.Metadata.Namespace != "custom-ns" {
+		t.Errorf("namespace = %q, want custom-ns", configMap.Metadata.Namespace)
+	}
+	if configMap.Data["true"] != "required" {
+		t.Errorf("gate \"true\" = %q, want required\n%s", configMap.Data["true"], rendered.String())
+	}
+	if configMap.Data["normal"] != "enabled" {
+		t.Errorf("gate \"normal\" = %q, want enabled\n%s", configMap.Data["normal"], rendered.String())
+	}
+	if !strings.Contains(rendered.String(), `"true": "required"`) {
+		t.Errorf("rendered YAML did not quote the YAML-sensitive key:\n%s", rendered.String())
 	}
 }
 
