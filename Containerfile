@@ -1,5 +1,5 @@
 # Build the manager binary
-FROM golang:1.26.5 AS builder
+FROM registry.access.redhat.com/ubi10/go-toolset:1.27.3@sha256:1b1b6d0a428218c617c43629240c42954beff44c48d47fe2ed25f1dfdc9dfa54 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG LDFLAGS=""

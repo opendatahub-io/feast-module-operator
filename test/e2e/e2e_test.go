@@ -79,7 +79,7 @@ var (
 	ctx       context.Context
 	cancel    context.CancelFunc
 	k8sClient client.Client
-	k         *k8sm.Matcher
+	k         *k8sm.Operations
 
 	testScheme = runtime.NewScheme()
 )
@@ -110,7 +110,7 @@ func runTestMain(m *testing.M) int {
 		return 1
 	}
 
-	k = k8sm.New(k8sClient, testScheme)
+	k = k8sm.Using(k8sClient)
 
 	return m.Run()
 }

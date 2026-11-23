@@ -24,7 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/yaml"
 
-	"github.com/opendatahub-io/feast-module-operator/pkg/resources/gvk"
+	gvk "github.com/opendatahub-io/odh-platform-utilities/framework/cluster/gvk"
 )
 
 const (

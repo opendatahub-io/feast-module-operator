@@ -26,8 +26,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	componentApi "github.com/opendatahub-io/feast-module-operator/api/components/v1alpha1"
-	"github.com/opendatahub-io/opendatahub-operator/v2/api/common"
-	odhtypes "github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/types"
+	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
+	fwtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 )
 
 const (
@@ -47,7 +47,7 @@ const (
 // It reads the platform version from the odh-data-config ConfigMap,
 // compares it with the version recorded in status.releases[name="platform"],
 // performs any upgrade work if they differ, and writes the new version to status.
-func (m *Module) reconcilePlatformVersion(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+func (m *Module) reconcilePlatformVersion(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
 	log := logf.FromContext(ctx)
 
 	obj, ok := rr.Instance.(*componentApi.FeastOperator)
@@ -109,7 +109,7 @@ func (m *Module) getPlatformVersion(ctx context.Context, cl client.Client) (stri
 
 // handlePlatformUpgrade performs version-specific upgrade logic when the platform
 // version advances. Add migration steps here as needed for future versions.
-func (m *Module) handlePlatformUpgrade(_ context.Context, _ *odhtypes.ReconciliationRequest, _, _ string) error {
+func (m *Module) handlePlatformUpgrade(_ context.Context, _ *fwtypes.ReconciliationRequest, _, _ string) error {
 	// No version-specific migrations needed for the initial release.
 	// Future migrations can be gated on oldVersion/newVersion comparisons here.
 	return nil
@@ -131,7 +131,7 @@ func setPlatformRelease(obj *componentApi.FeastOperator, version string) {
 			return
 		}
 	}
-	obj.Status.Releases = append(obj.Status.Releases, common.ComponentRelease{
+	obj.Status.Releases = append(obj.Status.Releases, fwapi.ComponentRelease{
 		Name:    platformReleaseName,
 		Version: version,
 	})

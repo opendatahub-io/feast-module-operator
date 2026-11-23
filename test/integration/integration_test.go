@@ -26,9 +26,7 @@ import (
 	"time"
 
 	. "github.com/onsi/gomega"
-	"github.com/spf13/viper"
 
-	promv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -52,8 +50,7 @@ import (
 	feastoperatorcontroller "github.com/opendatahub-io/feast-module-operator/internal/controller/feastoperator"
 	moduleconfig "github.com/opendatahub-io/feast-module-operator/pkg/config"
 	"github.com/opendatahub-io/feast-module-operator/test/support"
-	odhmanager "github.com/opendatahub-io/odh-platform-utilities/framework/manager"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/cluster"
+	fwmanager "github.com/opendatahub-io/odh-platform-utilities/framework/manager"
 )
 
 const (
@@ -76,7 +73,7 @@ var (
 	ctx                    context.Context
 	cancel                 context.CancelFunc
 	k8sClient              client.Client
-	k                      *k8sm.Matcher
+	k                      *k8sm.Operations
 	operatorReleaseVersion string
 	operatorPlatformType   string
 	testScheme             = runtime.NewScheme()
@@ -85,7 +82,6 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(testScheme))
 	utilruntime.Must(apiextensionsv1.AddToScheme(testScheme))
-	utilruntime.Must(promv1.AddToScheme(testScheme))
 	utilruntime.Must(componentsv1alpha1.AddToScheme(testScheme))
 }
 
@@ -131,9 +127,6 @@ func runTestMain(m *testing.M) int {
 	_ = directClient.DeleteAllOf(ctx, &appsv1.Deployment{}, client.InNamespace(testNamespace))
 	_ = directClient.DeleteAllOf(ctx, &corev1.Service{}, client.InNamespace(testNamespace))
 
-	viper.Set("rhai-applications-namespace", testNamespace)
-	cluster.SetRHAIApplicationNamespace(testNamespace)
-
 	// Emulate the manager Deployment: the operator configuration is driven
 	// by ODH_MODULE_OPERATOR_* env vars. The platform type is inherited from
 	// the environment when injected (ODH_MODULE_OPERATOR_PLATFORM_TYPE);
@@ -166,7 +159,7 @@ func runTestMain(m *testing.M) int {
 	// up the injected value rather than comparing the config against itself.
 	operatorPlatformType = os.Getenv("ODH_MODULE_OPERATOR_PLATFORM_TYPE")
 	if operatorPlatformType == "" {
-		operatorPlatformType = moduleconfig.DefaultPlatformType
+		operatorPlatformType = string(moduleconfig.DefaultPlatformType)
 	}
 
 	moduleCfg, err := moduleconfig.Load()
@@ -201,7 +194,7 @@ func runTestMain(m *testing.M) int {
 		return 1
 	}
 
-	mgr := odhmanager.New(ctrlMgr, odhmanager.WithManifestsBasePath(
+	mgr := fwmanager.New(ctrlMgr, fwmanager.WithManifestsBasePath(
 		support.MustProjectFile("config", "manifests")))
 
 	if err := feastoperatorcontroller.NewReconciler(ctx, mgr, moduleCfg, moduleCfg.Release()); err != nil {
@@ -221,7 +214,7 @@ func runTestMain(m *testing.M) int {
 	}
 
 	k8sClient = mgr.GetClient()
-	k = k8sm.New(k8sClient, testScheme)
+	k = k8sm.Using(k8sClient)
 
 	_ = directClient.Create(ctx, &rbacv1.ClusterRole{
 		ObjectMeta: ctrl.ObjectMeta{Name: "integration-test-role"},

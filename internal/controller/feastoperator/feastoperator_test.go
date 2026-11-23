@@ -42,18 +42,13 @@ import (
 	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/status/releases"
 	fwtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
-	"github.com/opendatahub-io/opendatahub-operator/v2/api/common"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/cluster"
-
-	odhtypes "github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/types"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/metadata/labels"
 )
 
 func newTestModule(t *testing.T) *Module {
 	t.Helper()
 
 	cfg := &moduleconfig.Config{
-		PlatformType:          string(cluster.OpenDataHub),
+		PlatformType:          moduleconfig.PlatformTypeOpenDataHub,
 		PlatformVersion:       "1.0.0",
 		ManifestsPath:         "/manifests",
 		ApplicationsNamespace: "test-ns",
@@ -65,12 +60,12 @@ func newTestModule(t *testing.T) *Module {
 	return m
 }
 
-func newTestRR(obj *componentApi.FeastOperator) *odhtypes.ReconciliationRequest {
-	return &odhtypes.ReconciliationRequest{
+func newTestRR(obj *componentApi.FeastOperator) *fwtypes.ReconciliationRequest {
+	return &fwtypes.ReconciliationRequest{
 		Instance:          obj,
 		ManifestsBasePath: "/manifests",
 		Release: (&moduleconfig.Config{
-			PlatformType:    string(cluster.OpenDataHub),
+			PlatformType:    moduleconfig.PlatformTypeOpenDataHub,
 			PlatformVersion: "1.0.0",
 		}).Release(),
 	}
@@ -96,10 +91,12 @@ func TestNewModuleProjectsKubeRBACProxyImage(t *testing.T) {
 	const image = "registry.example.com/odh-kube-rbac-proxy@sha256:1234"
 	t.Setenv("RELATED_IMAGE_ODH_KUBE_RBAC_PROXY_IMAGE", image)
 	for _, tc := range []struct {
-		name, platform, overlay string
+		name     string
+		platform moduleconfig.PlatformType
+		overlay  string
 	}{
-		{name: "ODH", platform: string(cluster.OpenDataHub), overlay: overlayODH},
-		{name: "RHOAI", platform: string(cluster.SelfManagedRhoai), overlay: overlayRhoai},
+		{name: "ODH", platform: moduleconfig.PlatformTypeOpenDataHub, overlay: overlayODH},
+		{name: "RHOAI", platform: moduleconfig.PlatformTypeSelfManagedRhoai, overlay: overlayRhoai},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			manifests := t.TempDir()
@@ -131,7 +128,7 @@ func TestNewModule(t *testing.T) {
 	g := NewWithT(t)
 
 	cfg := &moduleconfig.Config{
-		PlatformType:    string(cluster.OpenDataHub),
+		PlatformType:    moduleconfig.PlatformTypeOpenDataHub,
 		PlatformVersion: "1.0.0",
 		ManifestsPath:   "/manifests",
 	}
@@ -197,7 +194,7 @@ func TestSetKustomizedParamsWithOIDC(t *testing.T) {
 
 	m := newTestModule(t)
 	obj := newTestFeastOperator()
-	obj.Spec.OIDC = &common.GatewayOIDCSpec{IssuerURL: "https://issuer.example.com"}
+	obj.Spec.OIDC = &componentApi.GatewayOIDCSpec{IssuerURL: "https://issuer.example.com"}
 	rr := newTestRR(obj)
 	g.Expect(m.initialize(context.Background(), rr)).To(Succeed())
 
@@ -209,7 +206,7 @@ func TestSetKustomizedParamsInvalidOIDC(t *testing.T) {
 
 	m := newTestModule(t)
 	obj := newTestFeastOperator()
-	obj.Spec.OIDC = &common.GatewayOIDCSpec{IssuerURL: "not-a-url"}
+	obj.Spec.OIDC = &componentApi.GatewayOIDCSpec{IssuerURL: "not-a-url"}
 	rr := newTestRR(obj)
 	g.Expect(m.initialize(context.Background(), rr)).To(Succeed())
 
@@ -240,8 +237,8 @@ func TestGetSetPlatformRelease(t *testing.T) {
 	// Simulate releases.NewAction() overwriting status.releases with
 	// component releases, then setPlatformRelease appending the platform
 	// entry — this mirrors the actual controller action ordering.
-	obj.SetReleaseStatus(common.ComponentReleaseStatus{
-		Releases: []common.ComponentRelease{
+	obj.SetReleaseStatus(fwapi.ComponentReleaseStatus{
+		Releases: []fwapi.ComponentRelease{
 			{Name: "Feast", Version: "0.64.0"},
 		},
 	})
@@ -291,7 +288,7 @@ func TestCleanupClusterResourcesRunsWhenCapabilityAbsent(t *testing.T) {
 		},
 	}
 
-	rr := &odhtypes.ReconciliationRequest{
+	rr := &fwtypes.ReconciliationRequest{
 		Instance: feast,
 		Client:   cl,
 	}
@@ -317,7 +314,7 @@ func TestCleanupClusterResourcesRunsEvenWhenCapabilitiesManaged(t *testing.T) {
 			Name:      capabilitiesConfigMapName,
 			Namespace: "test-ns",
 			Labels: map[string]string{
-				labels.ODH.Component(componentName): labels.True,
+				componentLabelKey: componentLabelValue,
 			},
 			Finalizers: []string{CapabilitiesConfigMapFinalizer},
 		},
@@ -339,7 +336,7 @@ func TestCleanupClusterResourcesRunsEvenWhenCapabilitiesManaged(t *testing.T) {
 		},
 	}
 
-	rr := &odhtypes.ReconciliationRequest{
+	rr := &fwtypes.ReconciliationRequest{
 		Instance: feast,
 		Client:   cl,
 	}
@@ -371,7 +368,7 @@ func TestCleanupClusterResourcesRunsWhenBothCapabilitiesRemoved(t *testing.T) {
 			Name:      capabilitiesConfigMapName,
 			Namespace: "test-ns",
 			Labels: map[string]string{
-				labels.ODH.Component(componentName): labels.True,
+				componentLabelKey: componentLabelValue,
 			},
 		},
 	}
@@ -379,7 +376,7 @@ func TestCleanupClusterResourcesRunsWhenBothCapabilitiesRemoved(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "feast-crb",
 			Labels: map[string]string{
-				labels.ODH.Component(componentName): labels.True,
+				componentLabelKey: componentLabelValue,
 			},
 		},
 	}
@@ -387,7 +384,7 @@ func TestCleanupClusterResourcesRunsWhenBothCapabilitiesRemoved(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "feast-cr",
 			Labels: map[string]string{
-				labels.ODH.Component(componentName): labels.True,
+				componentLabelKey: componentLabelValue,
 			},
 		},
 	}
@@ -401,7 +398,7 @@ func TestCleanupClusterResourcesRunsWhenBothCapabilitiesRemoved(t *testing.T) {
 		},
 	}
 
-	rr := &odhtypes.ReconciliationRequest{
+	rr := &fwtypes.ReconciliationRequest{
 		Instance: feast,
 		Client:   cl,
 	}
@@ -449,7 +446,7 @@ func TestCleanupClusterResourcesWaitsForFeastOperatorRelease(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "feast-crb",
 			Labels: map[string]string{
-				labels.ODH.Component(componentName): labels.True,
+				componentLabelKey: componentLabelValue,
 			},
 		},
 	}
@@ -463,7 +460,7 @@ func TestCleanupClusterResourcesWaitsForFeastOperatorRelease(t *testing.T) {
 		},
 	}
 
-	rr := &odhtypes.ReconciliationRequest{
+	rr := &fwtypes.ReconciliationRequest{
 		Instance: feast,
 		Client:   cl,
 	}
@@ -539,7 +536,7 @@ func TestCleanupClusterResourcesDisablesAlreadyTerminatingConfigMap(t *testing.T
 			DataRegistryEnabled:   false,
 		},
 	}
-	rr := &odhtypes.ReconciliationRequest{
+	rr := &fwtypes.ReconciliationRequest{
 		Instance: feast,
 		Client:   cl,
 	}
@@ -609,7 +606,7 @@ func TestCleanupClusterResourcesTimesOutWaitingForFeastOperator(t *testing.T) {
 		recorder: recorder,
 	}
 
-	rr := &odhtypes.ReconciliationRequest{
+	rr := &fwtypes.ReconciliationRequest{
 		Instance: feast,
 		Client:   cl,
 	}

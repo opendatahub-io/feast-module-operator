@@ -28,8 +28,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	componentApi "github.com/opendatahub-io/feast-module-operator/api/components/v1alpha1"
-	odhtypes "github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/types"
-	odhdeploy "github.com/opendatahub-io/opendatahub-operator/v2/pkg/deploy"
+	fwtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
+	"github.com/opendatahub-io/odh-platform-utilities/framework/render/kustomize/params"
 )
 
 const (
@@ -44,7 +44,7 @@ const (
 
 // setKustomizedParams merges runtime values from the FeastOperator CR into params.env
 // before kustomize renders the manifests. Writes OIDC_ISSUER_URL (empty when OIDC not in use).
-func (m *Module) setKustomizedParams(_ context.Context, rr *odhtypes.ReconciliationRequest) error {
+func (m *Module) setKustomizedParams(_ context.Context, rr *fwtypes.ReconciliationRequest) error {
 	feast, ok := rr.Instance.(*componentApi.FeastOperator)
 	if !ok {
 		return errors.New("instance is not a FeastOperator")
@@ -67,7 +67,7 @@ func (m *Module) setKustomizedParams(_ context.Context, rr *odhtypes.Reconciliat
 		ParamsEnvKeyOIDCIssuerURL: issuerURL,
 	}
 
-	if err := odhdeploy.ApplyParams(rr.Manifests[0].String(), "params.env", nil, extraParams); err != nil {
+	if err := params.ApplyAtPath(rr.Manifests[0].String(), "params.env", params.Values(extraParams)); err != nil {
 		return fmt.Errorf("failed to update params.env with kustomize parameters: %w", err)
 	}
 
@@ -78,7 +78,7 @@ func (m *Module) setKustomizedParams(_ context.Context, rr *odhtypes.Reconciliat
 // spec.selector.matchLabels is missing the app.kubernetes.io/name label. This handles upgrades
 // where the selector changed between releases — since spec.selector is immutable, the only way
 // to update it is to delete and let the operator recreate it.
-func (m *Module) migrateDeploymentSelector(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+func (m *Module) migrateDeploymentSelector(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
 	log := logf.FromContext(ctx)
 
 	deploy := &appsv1.Deployment{}

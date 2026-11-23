@@ -14,10 +14,10 @@ SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
 ## Tool Versions
-CONTROLLER_GEN_VERSION ?= v0.20.1
-KUSTOMIZE_VERSION      ?= v5.8.1
-GOLANGCI_LINT_VERSION  ?= v2.11.4
-HELM_VERSION           ?= v4.2.0
+CONTROLLER_GEN_VERSION ?= v0.22.0
+KUSTOMIZE_VERSION      ?= v5.8.3
+GOLANGCI_LINT_VERSION  ?= v2.14.0
+HELM_VERSION           ?= v4.3.0
 
 ## Tool Commands
 CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
@@ -47,11 +47,11 @@ HELM_IMAGE ?= quay.io/opendatahub/odh-feast-module-operator:odh-stable
 
 .PHONY: manifests
 manifests: ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=opendatahub-feast-manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=opendatahub-feast-manager-role crd webhook paths="{./api/...,./internal/...}" output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
 generate: ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt",year=$(YEAR) paths="./..."
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt",year=$(YEAR) paths="./api/..."
 
 .PHONY: fmt
 fmt: ## Run golangci-lint formatters against code.
@@ -206,7 +206,7 @@ export ODH_PLATFORM_TYPE
 
 ifneq ($(ODH_PLATFORM_TYPE),)
 ifeq ($(ODH_PLATFORM_TYPE),odh)
-ODH_PLATFORM_TYPE_VALUE := OpenDataHub
+ODH_PLATFORM_TYPE_VALUE := Open Data Hub
 else ifeq ($(ODH_PLATFORM_TYPE),rhoai)
 ODH_PLATFORM_TYPE_VALUE := OpenShift AI Self-Managed
 else ifeq ($(ODH_PLATFORM_TYPE),managed-rhoai)
