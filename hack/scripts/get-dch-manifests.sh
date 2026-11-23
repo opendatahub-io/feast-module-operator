@@ -8,7 +8,7 @@ SOURCE_PATH="dc-controller/config"
 case "${ODH_PLATFORM_TYPE:-odh}" in
     odh | OpenDataHub)
         REPO="https://github.com/opendatahub-io/data-connect-hub"
-        REVISION="756540f540681f59490bbae4c0e92f5f0a05528d"
+        REVISION="28a632785eafc6f4e6b122cbc7d2ca99de909505"
         ;;
     rhoai | managed-rhoai)
         REPO="https://github.com/red-hat-data-services/data-connect-hub"
