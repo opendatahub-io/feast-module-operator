@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"k8s.io/client-go/tools/events"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/opendatahub-io/opendatahub-operator/v2/api/common"
 	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/cluster"
@@ -51,6 +52,9 @@ type Module struct {
 	manifestInfo odhtypes.ManifestInfo
 	// recorder reports Kubernetes events on the FeastOperator. Nil skips emission.
 	recorder events.EventRecorder
+	// reader bypasses the informer cache when probing an optional DCH API that
+	// may not exist yet. The owned-resource watch is registered after its CRD exists.
+	reader client.Reader
 }
 
 // OverlayFor returns the manifests overlay selected for the given platform

@@ -1,0 +1,179 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - secrets
+  - serviceaccounts
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - subjectaccessreviews
+  verbs:
+  - create
+- apiGroups:
+  - config.openshift.io
+  resources:
+  - apiservers
+  - ingresses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - dataconnecthub.opendatahub.io
+  resources:
+  - data-connection-types
+  - data-connections
+  - data-store
+  - flight-services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - post
+  - put
+  - update
+  - watch
+- apiGroups:
+  - dataconnecthub.opendatahub.io
+  resources:
+  - dataconnectservices
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - dataconnecthub.opendatahub.io
+  resources:
+  - dataconnectservices/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - dataconnecthub.opendatahub.io
+  resources:
+  - dataconnectservices/status
+  - initdataconnections/status
+  - initdataconnectiontypes/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - dataconnecthub.opendatahub.io
+  resources:
+  - initdataconnections
+  - initdataconnectiontypes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gateways
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - httproutes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - monitoring.coreos.com
+  resources:
+  - servicemonitors
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - networkpolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - operator.openshift.io
+  resources:
+  - ingresscontrollers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  - clusterroles
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - route.openshift.io
+  resources:
+  - routes
+  verbs:
+  - get

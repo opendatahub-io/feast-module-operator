@@ -20,12 +20,16 @@ import (
 	"context"
 	"fmt"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	k8serr "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	componentApi "github.com/opendatahub-io/feast-module-operator/api/components/v1alpha1"
+	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
+	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 	"github.com/opendatahub-io/opendatahub-operator/v2/api/common"
 	odhtypes "github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/types"
 )
@@ -53,6 +57,34 @@ func (m *Module) reconcilePlatformVersion(ctx context.Context, rr *odhtypes.Reco
 	obj, ok := rr.Instance.(*componentApi.FeastOperator)
 	if !ok {
 		return fmt.Errorf("instance is not a FeastOperator")
+	}
+	if obj.Spec.DataConnectHubEnabled() {
+		// DCH can still be installing/upgrading after manifests are applied.
+		// Keep the old module acknowledgment until both the child handshake
+		// and all module operator deployments have completed their rollouts.
+		if rr.Conditions == nil {
+			return nil
+		}
+		for _, conditionType := range []fwapi.ConditionType{dchReadyCondition, "DeploymentsAvailable"} {
+			condition := rr.Conditions.GetCondition(conditionType)
+			if condition == nil || condition.Status != metav1.ConditionTrue {
+				return nil
+			}
+		}
+		// Availability alone can still describe the previous ReplicaSet during
+		// an upgrade. Verify that both actual controller rollouts are current.
+		for _, name := range []string{deploymentName, dchDeploymentName} {
+			deployment := &appsv1.Deployment{}
+			err := m.dchReader(rr).Get(ctx, client.ObjectKey{Name: name, Namespace: m.cfg.ApplicationsNamespace}, deployment)
+			if err != nil && !k8serr.IsNotFound(err) {
+				return fmt.Errorf("checking Data module controller rollout: %w", err)
+			}
+			if err != nil || !ownedByDataModule(deployment, obj) || !deploymentRolloutCurrent(deployment) {
+				rr.Conditions.MarkFalse("DeploymentsAvailable",
+					conditions.WithReason("WaitingForCurrentModuleRollout"), conditions.WithMessagef("Waiting for %s rollout", name))
+				return nil
+			}
+		}
 	}
 
 	platformVersion, err := m.getPlatformVersion(ctx, rr.Client)

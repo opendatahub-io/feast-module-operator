@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"sort"
@@ -96,13 +97,16 @@ func extractPermissions(role *rbacv1.ClusterRole) map[permission]struct{} {
 }
 
 func main() {
-	if len(os.Args) < 3 || len(os.Args) > 5 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <module-operator-role.yaml> <operand-role.yaml> [<chart-clusterrole.yaml> <role-name>]\n", os.Args[0])
+	requireRegistryNamespace := flag.Bool("require-data-registry-namespace", true, "also verify the Feast operand's Data Registry namespace permissions")
+	flag.Parse()
+	args := flag.Args()
+	if len(args) != 2 && len(args) != 4 {
+		fmt.Fprintf(os.Stderr, "Usage: %s [flags] <module-operator-role.yaml> <operand-role.yaml> [<chart-clusterrole.yaml> <role-name>]\n", os.Args[0])
 		os.Exit(2)
 	}
 
-	moduleRolePath := os.Args[1]
-	operandRolePath := os.Args[2]
+	moduleRolePath := args[0]
+	operandRolePath := args[1]
 
 	moduleRole, err := loadClusterRole(moduleRolePath)
 	if err != nil {
@@ -129,7 +133,7 @@ func main() {
 			missingNamespacePerms = append(missingNamespacePerms, p)
 		}
 	}
-	if len(missingNamespacePerms) > 0 {
+	if *requireRegistryNamespace && len(missingNamespacePerms) > 0 {
 		printMissing("bundled operand RBAC", "Data Registry namespace reconciliation", missingNamespacePerms)
 		os.Exit(1)
 	}
@@ -151,9 +155,9 @@ func main() {
 
 	fmt.Println("OK: module operator RBAC covers all operand permissions.")
 
-	if len(os.Args) == 5 {
-		chartPath := os.Args[3]
-		roleName := os.Args[4]
+	if len(args) == 4 {
+		chartPath := args[2]
+		roleName := args[3]
 
 		chartRole, err := loadClusterRoleByName(chartPath, roleName)
 		if err != nil {

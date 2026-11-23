@@ -19,11 +19,13 @@ package feastoperator
 import (
 	"context"
 	"fmt"
+	"time"
 
 	promv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -50,6 +52,7 @@ import (
 	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/status/releases"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
+	fwreconciler "github.com/opendatahub-io/odh-platform-utilities/framework/controller/reconciler"
 )
 
 // +kubebuilder:rbac:groups=components.platform.opendatahub.io,resources=feastoperators,verbs=get;list;watch;create;update;patch;delete
@@ -90,6 +93,18 @@ import (
 // +kubebuilder:rbac:groups=operators.coreos.com,resources=operatorconditions,verbs=list
 // +kubebuilder:rbac:urls=/metrics,verbs=get
 
+// DCH controller permissions are included because this module installs its RBAC.
+// +kubebuilder:rbac:groups=dataconnecthub.opendatahub.io,resources=dataconnectservices,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=dataconnecthub.opendatahub.io,resources=dataconnectservices/status;initdataconnections/status;initdataconnectiontypes/status,verbs=get;patch;update
+// +kubebuilder:rbac:groups=dataconnecthub.opendatahub.io,resources=dataconnectservices/finalizers,verbs=update
+// +kubebuilder:rbac:groups=dataconnecthub.opendatahub.io,resources=initdataconnections;initdataconnectiontypes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=dataconnecthub.opendatahub.io,resources=data-connections;data-connection-types;flight-services;data-store,verbs=get;list;watch;create;update;patch;delete;post;put
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=config.openshift.io,resources=ingresses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=operator.openshift.io,resources=ingresscontrollers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
+
 func NewReconciler(
 	ctx context.Context,
 	mgr ctrl.Manager,
@@ -101,6 +116,7 @@ func NewReconciler(
 		return err
 	}
 	m.recorder = mgr.GetEventRecorder(componentName)
+	m.reader = mgr.GetAPIReader()
 
 	r, err := reconciler.ReconcilerFor(mgr, &componentApi.FeastOperator{}).
 		Owns(&corev1.ConfigMap{}, reconciler.WithPredicates(capabilitiesConfigMapWatchPredicate())).
@@ -110,6 +126,10 @@ func NewReconciler(
 		Owns(&rbacv1.ClusterRole{}).
 		Owns(&corev1.ServiceAccount{}).
 		Owns(&corev1.Service{}).
+		Owns(&networkingv1.NetworkPolicy{}).
+		OwnsGVK(dchServiceGVK,
+			reconciler.Dynamic(reconciler.CrdExists(dchServiceGVK)),
+			reconciler.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Owns(&appsv1.Deployment{}, reconciler.WithPredicates(predicates.DefaultDeploymentPredicate)).
 		Owns(&batchv1.Job{}).
 		Owns(&promv1.ServiceMonitor{}).
@@ -132,12 +152,13 @@ func NewReconciler(
 		WithAction(m.setKustomizedParams).
 		WithAction(m.reconcileDataRegistryNamespace).
 		WithAction(m.reconcileCapabilitiesConfigMap).
+		WithAction(m.prepareDataConnectHub).
 		WithAction(releases.NewAction()).
-		WithAction(m.reconcilePlatformVersion).
 		WithAction(kustomize.NewAction(
 			kustomize.WithLabel(labels.ODH.Component(componentName), labels.True),
 			kustomize.WithLabel(labels.K8SCommon.PartOf, componentName),
 		)).
+		WithAction(m.renderDataConnectHub).
 		WithAction(m.migrateDeploymentSelector).
 		WithAction(deploy.NewAction(
 			deploy.WithCache(),
@@ -145,13 +166,17 @@ func NewReconciler(
 		)).
 		WithAction(m.triggerCapabilityRolloutIfNeeded).
 		WithAction(deployments.NewAction()).
+		WithAction(m.reportDataConnectHubStatus).
+		WithAction(m.reconcilePlatformVersion).
 		WithAction(gc.NewAction(
 			gc.InNamespace(cfg.ApplicationsNamespace),
 		)).
 		WithFinalizer(m.cleanupClusterResources).
 		WithConditions(
 			conditions.Dependent(fwapi.ConditionType("DeploymentsAvailable"), conditions.HealthyWhenTrue),
+			conditions.Dependent(dchReadyCondition, conditions.HealthyWhenTrue),
 		).
+		WithReconcilerOpts(fwreconciler.WithDefaultRequeueAfter(5 * time.Minute)).
 		Build(ctx)
 
 	if err != nil {
@@ -199,6 +224,16 @@ func (m *Module) cleanupClusterResources(ctx context.Context, rr *odhtypes.Recon
 
 	if _, ok := rr.Instance.(*componentApi.FeastOperator); !ok {
 		return fmt.Errorf("instance is not a FeastOperator")
+	}
+	// Do not delete the DCH controller's cluster RBAC while its application is
+	// finalizing. Finalizers must return a regular error to keep retrying: this
+	// framework intentionally ignores StopError delays on the deletion path.
+	pending, err := m.deleteDCHService(ctx, rr)
+	if err != nil {
+		return err
+	}
+	if pending {
+		return fmt.Errorf("waiting for DataConnectService cleanup before removing Data module resources")
 	}
 
 	listOpts := []client.ListOption{

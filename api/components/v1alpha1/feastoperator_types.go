@@ -39,7 +39,8 @@ type FeastOperatorSpec struct {
 	// +optional
 	OIDC *common.GatewayOIDCSpec `json:"oidc,omitempty"`
 
-	// Capabilities declares the desired state for Feature Store and Data Registry.
+	// Capabilities declares the desired state for Feature Store, Data Registry,
+	// and Data Connect Hub.
 	// When present, these values are authoritative and override process-level
 	// environment defaults. When absent, the module falls back to startup
 	// configuration (env vars) for backward compatibility.
@@ -47,9 +48,9 @@ type FeastOperatorSpec struct {
 	Capabilities *CapabilitiesSpec `json:"capabilities,omitempty"`
 }
 
-// CapabilitiesSpec declares per-capability management state. Both fields are
-// required when the block is present — the handler must write the full block
-// or omit it entirely.
+// CapabilitiesSpec declares per-capability management state. FeatureStore and
+// DataRegistry remain required when the block is present. DataConnectHub is
+// optional for compatibility with existing platform versions and CRs.
 // +kubebuilder:object:generate=true
 type CapabilitiesSpec struct {
 	// FeatureStore controls standard FeatureStore workload reconciliation.
@@ -58,6 +59,49 @@ type CapabilitiesSpec struct {
 	// DataRegistry controls Data Registry workload reconciliation and
 	// namespace provisioning. The namespace is always rhoai-data-registry.
 	DataRegistry CapabilitySpec `json:"dataRegistry"`
+
+	// DataConnectHub controls installation of dc-controller and its managed
+	// DataConnectService. Omission means Removed, independently of the other
+	// capabilities and process-level Feature Store / Data Registry defaults.
+	// +optional
+	DataConnectHub *DataConnectHubCapabilitySpec `json:"dataConnectHub,omitempty"`
+}
+
+// DataConnectHubCapabilitySpec configures the Data Connect Hub capability.
+type DataConnectHubCapabilitySpec struct {
+	CapabilitySpec `json:",inline"`
+
+	// Gateway selects the platform Gateway for the DCH application.
+	// +optional
+	Gateway *DataConnectHubGatewaySpec `json:"gateway,omitempty"`
+
+	// TokenReviewAudiences are projected into the managed application's spec.
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
+	// +listType=set
+	// +optional
+	TokenReviewAudiences []string `json:"tokenReviewAudiences,omitempty"`
+}
+
+// DataConnectHubGatewaySpec identifies the Gateway used by the DCH application.
+type DataConnectHubGatewaySpec struct {
+	// Name is the Gateway resource name.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// Namespace contains the Gateway resource.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Namespace string `json:"namespace"`
+}
+
+// DataConnectHubEnabled reports whether DCH is explicitly Managed. Existing
+// configurations without the capability must never start installing DCH.
+func (s FeastOperatorSpec) DataConnectHubEnabled() bool {
+	return s.Capabilities != nil && s.Capabilities.DataConnectHub != nil &&
+		s.Capabilities.DataConnectHub.ManagementState == CapabilityManaged
 }
 
 // CapabilityManagementState restricts the allowed management states for capability

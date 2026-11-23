@@ -81,8 +81,12 @@ rules:
   resources:
   - secrets
   verbs:
+  - create
+  - delete
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - apiextensions.k8s.io
@@ -175,6 +179,7 @@ rules:
   - config.openshift.io
   resources:
   - apiservers
+  - ingresses
   verbs:
   - get
   - list
@@ -190,6 +195,60 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - dataconnecthub.opendatahub.io
+  resources:
+  - data-connection-types
+  - data-connections
+  - data-store
+  - flight-services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - post
+  - put
+  - update
+  - watch
+- apiGroups:
+  - dataconnecthub.opendatahub.io
+  resources:
+  - dataconnectservices
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - dataconnecthub.opendatahub.io
+  resources:
+  - dataconnectservices/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - dataconnecthub.opendatahub.io
+  resources:
+  - dataconnectservices/status
+  - initdataconnections/status
+  - initdataconnectiontypes/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - dataconnecthub.opendatahub.io
+  resources:
+  - initdataconnections
+  - initdataconnectiontypes
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - dataregistry.opendatahub.io
@@ -219,6 +278,26 @@ rules:
   - featurestores
   - featurestores/finalizers
   - featurestores/status
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gateways
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - httproutes
   verbs:
   - create
   - delete
@@ -279,6 +358,14 @@ rules:
   - clusterextensions
   verbs:
   - list
+- apiGroups:
+  - operator.openshift.io
+  resources:
+  - ingresscontrollers
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - operators.coreos.com
   resources:

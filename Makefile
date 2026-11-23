@@ -120,11 +120,14 @@ lint-fix: ## Run golangci-lint linter and perform fixes.
 .PHONY: get-manifests
 get-manifests: ## Download component manifests.
 	./hack/scripts/get-manifests.sh
+	bash ./hack/scripts/get-dch-manifests.sh
 
 .PHONY: verify-rbac
 verify-rbac: manifests ## Verify module operator RBAC covers all operand permissions and chart is in sync.
 	@go run ./hack/verify-rbac config/rbac/role.yaml config/manifests/feastoperator/rbac/role.yaml \
 		config/chart/templates/rbac.authorization.k8s.io_v1_clusterrole.yaml opendatahub-feast-manager-role
+	@go run ./hack/verify-rbac -require-data-registry-namespace=false config/rbac/role.yaml \
+		config/manifests/dataconnecthub/rbac/role.yaml
 
 ##@ Build
 
@@ -157,7 +160,7 @@ build-bin: ## Build manager binary only (for Containerfile; run container-prep o
 
 .PHONY: container-prep
 container-prep: manifests generate ## On host: regenerate code and fetch manifests before container-build.
-	@if [ "$(SKIP_GET_MANIFESTS)" = "1" ] || [ -f config/manifests/feastoperator/manager/manager.yaml ]; then \
+	@if [ "$(SKIP_GET_MANIFESTS)" = "1" ] || { [ -f config/manifests/feastoperator/manager/manager.yaml ] && [ -f config/manifests/dataconnecthub/manager/manager.yaml ]; }; then \
 		echo "Skipping get-manifests (bundled manifests present or SKIP_GET_MANIFESTS=1)"; \
 	else \
 		$(MAKE) get-manifests; \

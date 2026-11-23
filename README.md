@@ -16,6 +16,55 @@ The ODH Operator:
 2. Creates a `FeastOperator` CR with platform configuration (e.g. OIDC settings)
 3. This operator reconciles the CR and deploys the feast-operator workload
 
+### Data Connect Hub capability
+
+The same Data module can also install `dc-controller` and create its namespaced
+`DataConnectService` application CR. DCH is a sibling capability of Feature Store
+and Data Registry; it does not introduce another Platform module or module CR.
+
+```yaml
+spec:
+  capabilities:
+    featureStore:
+      managementState: Removed
+    dataRegistry:
+      managementState: Removed
+    dataConnectHub:
+      managementState: Managed
+      gateway:
+        name: odh-gateway
+        namespace: opendatahub
+      tokenReviewAudiences:
+        - https://kubernetes.default.svc
+```
+
+The platform projects the real Gateway and service-account audiences; the values
+above are illustrative. Omitting `dataConnectHub` leaves DCH disabled, including
+for legacy module CRs. Existing unconditional Feast operator installation remains
+unchanged when DCH is the only managed capability.
+
+An administrator must provision PostgreSQL and `dch-database-config` (containing
+`secret-config.toml`) in the applications namespace. This module does not create
+the database or its credentials. Missing prerequisites keep DCH not ready.
+
+The module forwards `platformVersion` from `odh-data-config` into the owned
+`opendatahub-dataconnecthub-config` application adapter. Gateway and audience
+settings are projected into `DataConnectService.spec`; application sizing,
+tracing, and connector overrides are not managed by the module. Existing unowned
+applications, ConfigMaps, and controller resources cause an ownership conflict
+rather than being silently adopted.
+
+On DCH removal, the application is deleted first and its finalizers must complete
+before the controller/RBAC can be removed. Application CRDs and the shared
+namespace are retained. DCH readiness and its platform-version acknowledgment
+contribute to the single `FeastOperator` module status.
+
+`make get-manifests` fetches both controller bundles at pinned revisions. Set
+`DCH_SOURCE_DIR` to a local DCH checkout to test local controller manifests.
+The platform must supply controller, REST, Flight, and proxy `RELATED_IMAGE_*`
+values; enabled DCH fails closed if any is absent rather than using an upstream
+image accidentally in a downstream/disconnected installation.
+
 ## Development
 ## Tesing CI pipeline
 ### Prerequisites
