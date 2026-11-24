@@ -254,7 +254,7 @@ func TestDCHBundlePreservesSharedServiceCA(t *testing.T) {
 	before := shared.DeepCopy()
 	require.NoError(t, m.prepareDataConnectHub(ctx, rr))
 	require.NoError(t, m.renderDataConnectHub(ctx, rr))
-	foundBundle, foundMount, foundMonitor := false, false, false
+	foundBundle, foundMount, foundMonitor, foundMetrics := false, false, false, false
 	for i := range rr.Resources {
 		obj := &rr.Resources[i]
 		switch obj.GetKind() {
@@ -269,6 +269,16 @@ func TestDCHBundlePreservesSharedServiceCA(t *testing.T) {
 			var deployment appsv1.Deployment
 			require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &deployment))
 			for _, volume := range deployment.Spec.Template.Spec.Volumes {
+				if volume.Name == "metrics-certs" {
+					require.NotNil(t, volume.Secret)
+					var keys []string
+					for _, item := range volume.Secret.Items {
+						keys = append(keys, item.Key)
+					}
+					require.ElementsMatch(t, []string{"tls.crt", "tls.key"}, keys,
+						"OpenShift serving-cert Secrets do not contain ca.crt")
+					foundMetrics = true
+				}
 				if volume.Name == "service-ca" {
 					require.NotNil(t, volume.ConfigMap)
 					require.Equal(t, "dc-controller-service-ca", volume.ConfigMap.Name)
@@ -288,6 +298,7 @@ func TestDCHBundlePreservesSharedServiceCA(t *testing.T) {
 	require.True(t, foundBundle)
 	require.True(t, foundMount)
 	require.True(t, foundMonitor)
+	require.True(t, foundMetrics)
 	require.NoError(t, rr.Client.Get(ctx, client.ObjectKeyFromObject(shared), shared))
 	require.Equal(t, before, shared, "shared CA contents, annotations and ownership must remain untouched")
 }
