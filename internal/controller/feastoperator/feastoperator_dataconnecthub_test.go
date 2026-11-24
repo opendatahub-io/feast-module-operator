@@ -239,6 +239,59 @@ func TestDCHMissingImagesFailsClosed(t *testing.T) {
 	require.ErrorContains(t, m.renderDataConnectHub(context.Background(), rr), dchImageNames[0])
 }
 
+func TestDCHBundlePreservesSharedServiceCA(t *testing.T) {
+	ctx := context.Background()
+	m, rr := newDCHTestRequest(t, true)
+	setDCHTestImages(t)
+	shared := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "openshift-service-ca.crt", Namespace: dchTestNamespace,
+			Annotations: map[string]string{"service.beta.openshift.io/inject-cabundle": "true"},
+		},
+		Data: map[string]string{"service-ca.crt": "existing-shared-ca"},
+	}
+	require.NoError(t, rr.Client.Create(ctx, shared))
+	before := shared.DeepCopy()
+	require.NoError(t, m.prepareDataConnectHub(ctx, rr))
+	require.NoError(t, m.renderDataConnectHub(ctx, rr))
+	foundBundle, foundMount, foundMonitor := false, false, false
+	for i := range rr.Resources {
+		obj := &rr.Resources[i]
+		switch obj.GetKind() {
+		case "ConfigMap":
+			require.NotEqual(t, shared.Name, obj.GetName(), "never adopt or garbage-collect the shared CA bundle")
+			if obj.GetName() == "dc-controller-service-ca" {
+				foundBundle = true
+				require.Equal(t, "true", obj.GetAnnotations()["service.beta.openshift.io/inject-cabundle"])
+				require.True(t, ownedByDataModule(obj, rr.Instance.(*componentApi.FeastOperator)))
+			}
+		case "Deployment":
+			var deployment appsv1.Deployment
+			require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &deployment))
+			for _, volume := range deployment.Spec.Template.Spec.Volumes {
+				if volume.Name == "service-ca" {
+					require.NotNil(t, volume.ConfigMap)
+					require.Equal(t, "dc-controller-service-ca", volume.ConfigMap.Name)
+					foundMount = true
+				}
+			}
+		case "ServiceMonitor":
+			var monitor promv1.ServiceMonitor
+			require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &monitor))
+			require.NotEmpty(t, monitor.Spec.Endpoints)
+			require.NotNil(t, monitor.Spec.Endpoints[0].TLSConfig)
+			require.NotNil(t, monitor.Spec.Endpoints[0].TLSConfig.CA.ConfigMap)
+			require.Equal(t, "dc-controller-service-ca", monitor.Spec.Endpoints[0].TLSConfig.CA.ConfigMap.Name)
+			foundMonitor = true
+		}
+	}
+	require.True(t, foundBundle)
+	require.True(t, foundMount)
+	require.True(t, foundMonitor)
+	require.NoError(t, rr.Client.Get(ctx, client.ObjectKeyFromObject(shared), shared))
+	require.Equal(t, before, shared, "shared CA contents, annotations and ownership must remain untouched")
+}
+
 func TestDCHReadinessAndUpgradeHandshake(t *testing.T) {
 	for _, tc := range []struct {
 		name, childReady, degraded, version, wantReason string
