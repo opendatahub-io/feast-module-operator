@@ -28,9 +28,10 @@ import (
 )
 
 type permission struct {
-	APIGroup string
-	Resource string
-	Verb     string
+	APIGroup     string
+	Resource     string
+	Verb         string
+	ResourceName string
 }
 
 func (p permission) String() string {
@@ -38,7 +39,7 @@ func (p permission) String() string {
 	if group == "" {
 		group = `""`
 	}
-	return fmt.Sprintf("groups=%s resources=%s verbs=%s", group, p.Resource, p.Verb)
+	return fmt.Sprintf("groups=%s resources=%s verbs=%s resourceName=%q", group, p.Resource, p.Verb, p.ResourceName)
 }
 
 func loadClusterRole(path string) (*rbacv1.ClusterRole, error) {
@@ -79,21 +80,41 @@ func loadClusterRoleByName(path, name string) (*rbacv1.ClusterRole, error) {
 	return nil, fmt.Errorf("ClusterRole %q not found in %s", name, path)
 }
 
-// extractPermissions flattens a ClusterRole into a set of (apiGroup, resource, verb) tuples.
-// Rules with resourceNames are expanded without the name constraint since the module operator
-// grants broader (unscoped) access.
+// extractPermissions preserves resourceNames: binding system:auth-delegator
+// does not authorize granting bind permission for an unrelated named role.
 func extractPermissions(role *rbacv1.ClusterRole) map[permission]struct{} {
 	perms := make(map[permission]struct{})
 	for _, rule := range role.Rules {
+		names := rule.ResourceNames
+		if len(names) == 0 {
+			names = []string{""}
+		}
 		for _, group := range rule.APIGroups {
 			for _, resource := range rule.Resources {
 				for _, verb := range rule.Verbs {
-					perms[permission{APIGroup: group, Resource: resource, Verb: verb}] = struct{}{}
+					for _, name := range names {
+						perms[permission{APIGroup: group, Resource: resource, Verb: verb, ResourceName: name}] = struct{}{}
+					}
 				}
 			}
 		}
 	}
 	return perms
+}
+
+func permissionCovered(granted map[permission]struct{}, required permission) bool {
+	for _, group := range []string{required.APIGroup, "*"} {
+		for _, resource := range []string{required.Resource, "*"} {
+			for _, verb := range []string{required.Verb, "*"} {
+				for _, name := range []string{required.ResourceName, ""} {
+					if _, ok := granted[permission{APIGroup: group, Resource: resource, Verb: verb, ResourceName: name}]; ok {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 func main() {
@@ -129,7 +150,7 @@ func main() {
 	var missingNamespacePerms []permission
 	for _, verb := range []string{"create", "update"} {
 		p := permission{APIGroup: "", Resource: "namespaces", Verb: verb}
-		if _, ok := operandPerms[p]; !ok {
+		if !permissionCovered(operandPerms, p) {
 			missingNamespacePerms = append(missingNamespacePerms, p)
 		}
 	}
@@ -140,7 +161,7 @@ func main() {
 
 	var missing []permission
 	for p := range operandPerms {
-		if _, ok := modulePerms[p]; !ok {
+		if !permissionCovered(modulePerms, p) {
 			missing = append(missing, p)
 		}
 	}
@@ -169,7 +190,7 @@ func main() {
 
 		var chartMissing []permission
 		for p := range modulePerms {
-			if _, ok := chartPerms[p]; !ok {
+			if !permissionCovered(chartPerms, p) {
 				chartMissing = append(chartMissing, p)
 			}
 		}
@@ -192,6 +213,9 @@ func printMissing(target, source string, missing []permission) {
 		if missing[i].Resource != missing[j].Resource {
 			return missing[i].Resource < missing[j].Resource
 		}
+		if missing[i].ResourceName != missing[j].ResourceName {
+			return missing[i].ResourceName < missing[j].ResourceName
+		}
 		return missing[i].Verb < missing[j].Verb
 	})
 
@@ -199,7 +223,7 @@ func printMissing(target, source string, missing []permission) {
 
 	grouped := map[string]map[string][]string{}
 	for _, p := range missing {
-		key := p.APIGroup + "/" + p.Resource
+		key := p.APIGroup + "/" + p.Resource + "/" + p.ResourceName
 		if grouped[key] == nil {
 			grouped[key] = map[string][]string{}
 		}
@@ -207,14 +231,14 @@ func printMissing(target, source string, missing []permission) {
 	}
 
 	for _, p := range missing {
-		key := p.APIGroup + "/" + p.Resource
+		key := p.APIGroup + "/" + p.Resource + "/" + p.ResourceName
 		if verbs, ok := grouped[key]; ok {
 			group := p.APIGroup
 			if group == "" {
 				group = `""`
 			}
-			fmt.Fprintf(os.Stderr, "  groups=%-30s resources=%-30s verbs=%s\n",
-				group, p.Resource, strings.Join(verbs["verbs"], ";"))
+			fmt.Fprintf(os.Stderr, "  groups=%-30s resources=%-30s verbs=%s resourceName=%q\n",
+				group, p.Resource, strings.Join(verbs["verbs"], ";"), p.ResourceName)
 			delete(grouped, key)
 		}
 	}
