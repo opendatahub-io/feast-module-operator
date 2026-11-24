@@ -8,15 +8,20 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 )
 
-func TestDCHBindPermissionsInSourceAndChart(t *testing.T) {
+func TestDCHPermissionsInSourceAndChart(t *testing.T) {
 	root := filepath.Join("..", "..")
 	module, err := loadClusterRole(filepath.Join(root, "config", "rbac", "role.yaml"))
 	require.NoError(t, err)
 	chart, err := loadClusterRoleByName(filepath.Join(root, "config", "chart", "templates",
 		"rbac.authorization.k8s.io_v1_clusterrole.yaml"), "opendatahub-feast-manager-role")
 	require.NoError(t, err)
-	for _, role := range []*rbacv1.ClusterRole{module, chart} {
+	controller, err := loadClusterRole(filepath.Join(root, "config", "manifests", "dataconnecthub", "rbac", "role.yaml"))
+	require.NoError(t, err)
+	for _, role := range []*rbacv1.ClusterRole{module, chart, controller} {
 		granted := extractPermissions(role)
+		require.True(t, permissionCovered(granted, permission{
+			APIGroup: "dataconnecthub.opendatahub.io", Resource: "initdataconnectiontypes", Verb: "create",
+		}), "controller initialization permissions must be grantable through the module chart")
 		for _, name := range []string{"dch-flight-service-secret-access", "dch-read", "dch-read-write", "dch-rest-service-secret-access"} {
 			require.True(t, permissionCovered(granted, permission{
 				APIGroup: "rbac.authorization.k8s.io", Resource: "clusterroles", Verb: "bind", ResourceName: name,

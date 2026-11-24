@@ -99,6 +99,7 @@ import (
 // +kubebuilder:rbac:groups=dataconnecthub.opendatahub.io,resources=dataconnectservices/status;initdataconnections/status;initdataconnectiontypes/status,verbs=get;patch;update
 // +kubebuilder:rbac:groups=dataconnecthub.opendatahub.io,resources=dataconnectservices/finalizers,verbs=update
 // +kubebuilder:rbac:groups=dataconnecthub.opendatahub.io,resources=initdataconnections;initdataconnectiontypes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=dataconnecthub.opendatahub.io,resources=initdataconnectiontypes,verbs=create
 // +kubebuilder:rbac:groups=dataconnecthub.opendatahub.io,resources=data-connections;data-connection-types;flight-services;data-store,verbs=get;list;watch;create;update;patch;delete;post;put
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=config.openshift.io,resources=ingresses,verbs=get;list;watch
