@@ -64,3 +64,27 @@ func TestPermissionCoveredResourceNames(t *testing.T) {
 		})
 	}
 }
+
+// DCH #505 added warning Events for tenant-onboarding conflicts. This is
+// required when refreshing the DCH dependency even without namespace changes.
+func TestModuleCanDelegateDCHTenantWarningEvents(t *testing.T) {
+	root := filepath.Join("..", "..")
+	module, err := loadClusterRole(filepath.Join(root, "config", "rbac", "role.yaml"))
+	require.NoError(t, err)
+	chart, err := loadClusterRoleByName(filepath.Join(root, "config", "chart", "templates",
+		"rbac.authorization.k8s.io_v1_clusterrole.yaml"), "opendatahub-feast-manager-role")
+	require.NoError(t, err)
+	for _, role := range []*rbacv1.ClusterRole{module, chart} {
+		granted := extractPermissions(role)
+		for _, verb := range []string{"create", "patch"} {
+			require.True(t, permissionCovered(granted, permission{
+				APIGroup: "events.k8s.io", Resource: "events", Verb: verb,
+			}), "source and chart must be able to grant DCH tenant warning Events")
+		}
+		for _, verb := range []string{"get", "list", "watch", "update", "delete"} {
+			require.False(t, permissionCovered(granted, permission{
+				APIGroup: "events.k8s.io", Resource: "events", Verb: verb,
+			}), "event permissions must remain limited to create and patch")
+		}
+	}
+}
