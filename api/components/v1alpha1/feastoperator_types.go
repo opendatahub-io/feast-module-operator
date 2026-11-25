@@ -71,6 +71,13 @@ type CapabilitiesSpec struct {
 type DataConnectHubCapabilitySpec struct {
 	CapabilitySpec `json:",inline"`
 
+	// Namespace contains DCH services, not the controller. Defaults to
+	// odh-data-connect-hub-infra on ODH or rhoai-data-connect-hub-infra on RHOAI.
+	// +kubebuilder:validation:Pattern="^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$"
+	// +kubebuilder:validation:MaxLength=63
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
 	// Gateway selects the platform Gateway for the DCH application.
 	// +optional
 	Gateway *DataConnectHubGatewaySpec `json:"gateway,omitempty"`

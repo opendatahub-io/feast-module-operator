@@ -31,6 +31,7 @@ spec:
       managementState: Removed
     dataConnectHub:
       managementState: Managed
+      namespace: odh-data-connect-hub-infra
       gateway:
         name: odh-gateway
         namespace: opendatahub
@@ -44,8 +45,19 @@ for legacy module CRs. Existing unconditional Feast operator installation remain
 unchanged when DCH is the only managed capability.
 
 An administrator must provision PostgreSQL and `dch-database-config` (containing
-`secret-config.toml`) in the applications namespace. This module does not create
+`secret-config.toml`) in the DCH infrastructure namespace. This module does not create
 the database or its credentials. Missing prerequisites keep DCH not ready.
+
+The default infrastructure namespace is `odh-data-connect-hub-infra` on ODH and
+`rhoai-data-connect-hub-infra` on RHOAI. `namespace` overrides it. The DCH CR,
+application ConfigMap, REST and Flight use this namespace; dc-controller stays in
+the platform applications namespace. Its HTTPRoute also stays there, authorized
+by per-Service ReferenceGrants in the infrastructure namespace.
+
+Existing installations are not silently moved. Disable DCH and migrate its
+database/credentials before changing namespaces. Removal finds managed legacy
+CRs even in the old namespace. Infrastructure namespaces and their user-owned
+data are retained on removal.
 
 The module forwards `platformVersion` from `odh-data-config` into the owned
 `opendatahub-dataconnecthub-config` application adapter. Gateway and audience

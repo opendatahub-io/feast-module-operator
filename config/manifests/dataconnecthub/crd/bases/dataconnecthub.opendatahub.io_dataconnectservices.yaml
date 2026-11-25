@@ -2501,6 +2501,13 @@ spec:
                   namespace:
                     description: namespace is the namespace of the Gateway resource
                     type: string
+                  routeNamespace:
+                    description: |-
+                      routeNamespace contains the HTTPRoute. Defaults to the DataConnectService
+                      namespace. When different, ReferenceGrants authorize the DCH backends.
+                    maxLength: 63
+                    pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$
+                    type: string
                 required:
                 - name
                 - namespace
@@ -5056,6 +5063,13 @@ spec:
                   namespace:
                     description: namespace is the namespace of the Gateway resource
                     type: string
+                  routeNamespace:
+                    description: |-
+                      routeNamespace contains the HTTPRoute. Defaults to the DataConnectService
+                      namespace. When different, ReferenceGrants authorize the DCH backends.
+                    maxLength: 63
+                    pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$
+                    type: string
                 required:
                 - name
                 - namespace
@@ -5063,8 +5077,8 @@ spec:
               globalTenants:
                 description: |-
                   globalTenants lists the namespaces labeled
-                  opendatahub.io/global-data-connect-hub-project whose connection types the
-                  services currently share with every tenant. Empty when no namespace is
+                  opendatahub.io/global-data-connect-hub-project, where the platform Auth CR
+                  groups are granted access to DCH resources. Empty when no namespace is
                   labeled or the platform Auth API is not installed.
                 items:
                   type: string

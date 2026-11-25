@@ -106,16 +106,18 @@ func TestDCHApplicationProjection(t *testing.T) {
 	require.NoError(t, m.prepareDataConnectHub(context.Background(), rr))
 	require.Len(t, rr.Resources, 2)
 	cm := rr.Resources[0]
+	require.Equal(t, dchNamespaceODH, cm.GetNamespace())
 	version, _, err := unstructured.NestedString(cm.Object, "data", PlatformVersionKey)
 	require.NoError(t, err)
 	require.Equal(t, dchTestVersion, version)
 	service := rr.Resources[1]
+	require.Equal(t, dchNamespaceODH, service.GetNamespace())
 	require.Equal(t, dchServiceGVK, service.GroupVersionKind())
 	require.True(t, ownedByDataModule(&service, rr.Instance.(*componentApi.FeastOperator)))
 	spec, _, err := unstructured.NestedMap(service.Object, "spec")
 	require.NoError(t, err)
 	require.Equal(t, map[string]any{
-		"gateway":              map[string]any{"name": "platform-gateway", "namespace": "ingress"},
+		"gateway":              map[string]any{"name": "platform-gateway", "namespace": "ingress", "routeNamespace": dchTestNamespace},
 		"tokenReviewAudiences": []any{"https://issuer.example"},
 	}, spec)
 }
@@ -124,9 +126,9 @@ func TestDCHRefusesUnownedResources(t *testing.T) {
 	for _, resource := range []string{"application", "config"} {
 		t.Run(resource, func(t *testing.T) {
 			m, rr := newDCHTestRequest(t, true)
-			var obj client.Object = newDCHService(dchTestNamespace)
+			var obj client.Object = newDCHService(dchNamespaceODH)
 			if resource == "config" {
-				obj = &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: dchConfigName, Namespace: dchTestNamespace}}
+				obj = &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: dchConfigName, Namespace: dchNamespaceODH}}
 			}
 			require.NoError(t, rr.Client.Create(context.Background(), obj))
 			err := m.prepareDataConnectHub(context.Background(), rr)
@@ -142,7 +144,7 @@ func TestDCHCleanupWaitsForApplication(t *testing.T) {
 	ctx := context.Background()
 	m, rr := newDCHTestRequest(t, false)
 	owner := rr.Instance.(*componentApi.FeastOperator)
-	service := newDCHService(dchTestNamespace)
+	service := newDCHService(dchNamespaceODH)
 	service.SetFinalizers([]string{"dataconnecthub.opendatahub.io/finalizer"})
 	require.NoError(t, controllerutil.SetControllerReference(owner, service, rr.Client.Scheme()))
 	require.NoError(t, rr.Client.Create(ctx, service))
@@ -171,7 +173,7 @@ func TestDCHCleanupWaitsForApplication(t *testing.T) {
 
 func TestDCHDisablePreservesStandaloneApplication(t *testing.T) {
 	m, rr := newDCHTestRequest(t, false)
-	service := newDCHService(dchTestNamespace)
+	service := newDCHService(dchNamespaceODH)
 	require.NoError(t, rr.Client.Create(context.Background(), service))
 	require.NoError(t, m.prepareDataConnectHub(context.Background(), rr))
 	require.NoError(t, rr.Client.Get(context.Background(), client.ObjectKeyFromObject(service), service))
@@ -237,6 +239,47 @@ func TestDCHMissingImagesFailsClosed(t *testing.T) {
 		t.Setenv(name, "")
 	}
 	require.ErrorContains(t, m.renderDataConnectHub(context.Background(), rr), dchImageNames[0])
+}
+
+func TestDCHInfrastructureNamespaceSelection(t *testing.T) {
+	for _, tc := range []struct {
+		platform string
+		override string
+		want     string
+	}{
+		{"Open Data Hub", "", dchNamespaceODH},
+		{"OpenShift AI Self-Managed", "", dchNamespaceRHOAI},
+		{"OpenShift AI Cloud Service", "", dchNamespaceRHOAI},
+		{"OpenShift AI Self-Managed", "custom-dch-infra", "custom-dch-infra"},
+	} {
+		t.Run(tc.platform+"/"+tc.override, func(t *testing.T) {
+			m, rr := newDCHTestRequest(t, true)
+			m.cfg.PlatformType = tc.platform
+			owner := rr.Instance.(*componentApi.FeastOperator)
+			owner.Spec.Capabilities.DataConnectHub.Namespace = tc.override
+			require.NoError(t, m.prepareDataConnectHub(t.Context(), rr))
+			for _, obj := range rr.Resources {
+				require.Equal(t, tc.want, obj.GetNamespace())
+			}
+			ns := &corev1.Namespace{}
+			require.NoError(t, rr.Client.Get(t.Context(), client.ObjectKey{Name: tc.want}, ns))
+			require.Empty(t, ns.OwnerReferences)
+		})
+	}
+}
+
+func TestDCHNamespaceRemovalFindsLegacyApplication(t *testing.T) {
+	m, rr := newDCHTestRequest(t, true)
+	owner := rr.Instance.(*componentApi.FeastOperator)
+	legacy := newDCHService(dchTestNamespace)
+	require.NoError(t, controllerutil.SetControllerReference(owner, legacy, rr.Client.Scheme()))
+	require.NoError(t, rr.Client.Create(t.Context(), legacy))
+	require.ErrorContains(t, m.prepareDataConnectHub(t.Context(), rr), "set Removed and migrate")
+	owner.Spec.Capabilities.DataConnectHub.ManagementState = componentApi.CapabilityRemoved
+	pending, err := m.deleteDCHService(t.Context(), rr)
+	require.NoError(t, err)
+	require.True(t, pending)
+	require.Error(t, rr.Client.Get(t.Context(), client.ObjectKeyFromObject(legacy), legacy))
 }
 
 func TestDCHBundlePreservesSharedServiceCA(t *testing.T) {
@@ -321,7 +364,7 @@ func TestDCHReadinessAndUpgradeHandshake(t *testing.T) {
 			m, rr := newDCHTestRequest(t, true)
 			owner := rr.Instance.(*componentApi.FeastOperator)
 			setPlatformRelease(owner, "3.6.0")
-			service := newDCHService(dchTestNamespace)
+			service := newDCHService(dchNamespaceODH)
 			service.SetGeneration(2)
 			observed := int64(2)
 			if tc.stale {
