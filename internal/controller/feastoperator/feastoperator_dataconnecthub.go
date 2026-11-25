@@ -53,6 +53,8 @@ const (
 	dchReadyCondition = fwapi.ConditionType("DataConnectHubReady")
 	dchReleasePrefix  = "dataconnecthub/"
 	dchRetryInterval  = 10 * time.Second
+	dchNamespaceODH   = "odh-data-connect-hub-infra"
+	dchNamespaceRHOAI = "rhoai-data-connect-hub-infra"
 )
 
 var dchServiceGVK = schema.GroupVersionKind{
@@ -82,7 +84,7 @@ func (m *Module) dchReader(rr *odhtypes.ReconciliationRequest) client.Reader {
 }
 
 func (m *Module) getDCHService(ctx context.Context, rr *odhtypes.ReconciliationRequest) (*unstructured.Unstructured, error) {
-	obj := newDCHService(m.cfg.ApplicationsNamespace)
+	obj := newDCHService(m.dchNamespace(rr.Instance.(*componentApi.FeastOperator)))
 	if err := m.dchReader(rr).Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
 		if k8serr.IsNotFound(err) || meta.IsNoMatchError(err) {
 			return nil, nil
@@ -90,6 +92,33 @@ func (m *Module) getDCHService(ctx context.Context, rr *odhtypes.ReconciliationR
 		return nil, fmt.Errorf("reading DataConnectService: %w", err)
 	}
 	return obj, nil
+}
+
+func (m *Module) dchNamespace(owner *componentApi.FeastOperator) string {
+	if owner.Spec.Capabilities != nil && owner.Spec.Capabilities.DataConnectHub != nil && owner.Spec.Capabilities.DataConnectHub.Namespace != "" {
+		return owner.Spec.Capabilities.DataConnectHub.Namespace
+	}
+	if m.cfg.PlatformType == string(cluster.SelfManagedRhoai) || m.cfg.PlatformType == string(cluster.ManagedRhoai) {
+		return dchNamespaceRHOAI
+	}
+	return dchNamespaceODH
+}
+
+// Preserve namespaces on removal: they may hold databases and user-owned data.
+func (m *Module) ensureDCHNamespace(ctx context.Context, rr *odhtypes.ReconciliationRequest, namespace string) error {
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
+	if err := rr.Client.Get(ctx, client.ObjectKeyFromObject(ns), ns); err == nil {
+		if !ns.DeletionTimestamp.IsZero() {
+			return fmt.Errorf("DCH namespace %s is terminating", namespace)
+		}
+		return nil
+	} else if !k8serr.IsNotFound(err) {
+		return fmt.Errorf("reading DCH namespace: %w", err)
+	}
+	if err := rr.Client.Create(ctx, ns); err != nil && !k8serr.IsAlreadyExists(err) {
+		return fmt.Errorf("creating DCH namespace: %w", err)
+	}
+	return nil
 }
 
 func ownedByDataModule(obj client.Object, owner *componentApi.FeastOperator) bool {
@@ -136,7 +165,22 @@ func (m *Module) prepareDataConnectHub(ctx context.Context, rr *odhtypes.Reconci
 			return odherrors.NewStopError("waiting for DataConnectService cleanup").WithRequeueAfter(dchRetryInterval)
 		}
 		markDCH(rr, metav1.ConditionTrue, "Removed", "Data Connect Hub capability is disabled")
+		if err := m.deleteDCHConfig(ctx, rr); err != nil {
+			return err
+		}
 		return nil
+	}
+	namespace := m.dchNamespace(owner)
+	var installations unstructured.UnstructuredList
+	installations.SetGroupVersionKind(dchServiceGVK.GroupVersion().WithKind("DataConnectServiceList"))
+	if err := m.dchReader(rr).List(ctx, &installations); err != nil && !meta.IsNoMatchError(err) && !k8serr.IsNotFound(err) {
+		return fmt.Errorf("checking existing DCH installations: %w", err)
+	}
+	for i := range installations.Items {
+		installed := &installations.Items[i]
+		if installed.GetNamespace() != namespace {
+			return fmt.Errorf("DCH already exists in namespace %s; set Removed and migrate it before installing into %s", installed.GetNamespace(), namespace)
+		}
 	}
 	markDCH(rr, metav1.ConditionFalse, "Reconciling", "Reconciling Data Connect Hub")
 	service, err := m.getDCHService(ctx, rr)
@@ -159,10 +203,14 @@ func (m *Module) prepareDataConnectHub(ctx context.Context, rr *odhtypes.Reconci
 		return err
 	}
 	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: dchConfigName, Namespace: m.cfg.ApplicationsNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: dchConfigName, Namespace: namespace},
 		Data: map[string]string{
 			PlatformVersionKey: version, "distribution.name": m.cfg.PlatformType, "distribution.version": version,
+			"gateway.routeNamespace": m.cfg.ApplicationsNamespace,
 		},
+	}
+	if err := m.ensureDCHNamespace(ctx, rr, namespace); err != nil {
+		return err
 	}
 	if err := m.checkDCHOwnership(ctx, rr, cm); err != nil {
 		return err
@@ -174,11 +222,11 @@ func (m *Module) prepareDataConnectHub(ctx context.Context, rr *odhtypes.Reconci
 		return err
 	}
 
-	service = newDCHService(m.cfg.ApplicationsNamespace)
+	service = newDCHService(namespace)
 	spec := map[string]any{}
 	capability := owner.Spec.Capabilities.DataConnectHub
 	if capability.Gateway != nil {
-		spec["gateway"] = map[string]any{"name": capability.Gateway.Name, "namespace": capability.Gateway.Namespace}
+		spec["gateway"] = map[string]any{"name": capability.Gateway.Name, "namespace": capability.Gateway.Namespace, "routeNamespace": m.cfg.ApplicationsNamespace}
 	}
 	if capability.TokenReviewAudiences != nil {
 		audiences := make([]any, len(capability.TokenReviewAudiences))
@@ -309,20 +357,46 @@ func injectDCHImages(obj *unstructured.Unstructured, images map[string]string) e
 // deleteDCHService never adopts/deletes an unrelated standalone application.
 // A true result means the caller must keep dc-controller and its RBAC running.
 func (m *Module) deleteDCHService(ctx context.Context, rr *odhtypes.ReconciliationRequest) (bool, error) {
-	service, err := m.getDCHService(ctx, rr)
-	if err != nil || service == nil {
-		return false, err
+	var services unstructured.UnstructuredList
+	services.SetGroupVersionKind(dchServiceGVK.GroupVersion().WithKind("DataConnectServiceList"))
+	if err := m.dchReader(rr).List(ctx, &services); err != nil {
+		if k8serr.IsNotFound(err) || meta.IsNoMatchError(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("listing DCH applications for cleanup: %w", err)
 	}
-	if !ownedByDataModule(service, rr.Instance.(*componentApi.FeastOperator)) {
-		return false, nil
-	}
-	if service.GetDeletionTimestamp().IsZero() {
-		uid := service.GetUID()
-		if err := rr.Client.Delete(ctx, service, &client.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}}); client.IgnoreNotFound(err) != nil {
-			return false, fmt.Errorf("deleting DCH application: %w", err)
+	pending := false
+	for i := range services.Items {
+		service := &services.Items[i]
+		if !ownedByDataModule(service, rr.Instance.(*componentApi.FeastOperator)) {
+			continue
+		}
+		pending = true
+		if service.GetDeletionTimestamp().IsZero() {
+			uid := service.GetUID()
+			if err := rr.Client.Delete(ctx, service, &client.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}}); client.IgnoreNotFound(err) != nil {
+				return false, fmt.Errorf("deleting DCH application: %w", err)
+			}
 		}
 	}
-	return true, nil
+	return pending, nil
+}
+
+func (m *Module) deleteDCHConfig(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+	var configs corev1.ConfigMapList
+	if err := m.dchReader(rr).List(ctx, &configs); err != nil {
+		return fmt.Errorf("listing DCH configuration for cleanup: %w", err)
+	}
+	for i := range configs.Items {
+		cm := &configs.Items[i]
+		if cm.Name == dchConfigName && ownedByDataModule(cm, rr.Instance.(*componentApi.FeastOperator)) {
+			uid := cm.UID
+			if err := rr.Client.Delete(ctx, cm, &client.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}}); client.IgnoreNotFound(err) != nil {
+				return fmt.Errorf("deleting DCH configuration: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 func dchCondition(obj *unstructured.Unstructured, conditionType string) (string, string, string) {
