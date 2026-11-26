@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/invopop/jsonschema"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -206,6 +207,21 @@ func splitImageTag(image string) [2]string {
 	}
 
 	return [2]string{image, defaultImageTag}
+}
+
+// imageSpecFor turns an image reference into chart values.
+//
+// A digest reference is kept whole in fullRef: `chart.imageRef` prefers it, and
+// splitting it into repository and tag would let a later `image.tag` override
+// render a tag after `@sha256`, which is not a valid reference.
+func imageSpecFor(image string) ImageSpec {
+	if at := strings.IndexByte(image, '@'); at > 0 {
+		return ImageSpec{Repository: image[:at], FullRef: image}
+	}
+
+	parts := splitImageTag(image)
+
+	return ImageSpec{Repository: parts[0], Tag: parts[1]}
 }
 
 func extractResources(res map[string]any) ResourceSpec {

@@ -34,16 +34,17 @@ import (
 )
 
 const (
-	defaultOutputDir   = "config/chart"
-	defaultChartName   = "opendatahub-feast-operator"
-	defaultChartVer    = "0.1.0"
-	templatesDirName   = "templates"
-	crdsDirName        = "crds"
-	chartYAMLFilename  = "Chart.yaml"
-	helpersTplFilename = "_helpers.tpl"
-	valuesYAMLFilename = "values.yaml"
-	valuesSchemaFile   = "values.schema.json"
-	coreAPIGroup       = "core"
+	defaultOutputDir        = "config/chart"
+	defaultChartName        = "opendatahub-feast-operator"
+	defaultChartVer         = "0.1.0"
+	templatesDirName        = "templates"
+	crdsDirName             = "crds"
+	chartYAMLFilename       = "Chart.yaml"
+	helpersTplFilename      = "_helpers.tpl"
+	upgradeGatesTplFilename = "upgrade-gates.yaml"
+	valuesYAMLFilename      = "values.yaml"
+	valuesSchemaFile        = "values.schema.json"
+	coreAPIGroup            = "core"
 )
 
 // NewCommand returns the cobra command for the chartgen subcommand.
@@ -51,6 +52,7 @@ func NewCommand() *cobra.Command {
 	var outputDir string
 	var chartName string
 	var chartVersion string
+	var image string
 
 	cmd := &cobra.Command{
 		Use:   "chartgen",
@@ -61,13 +63,15 @@ kustomize build) and generates a Helm chart with proper templating.
 Example:
   kustomize build config/default | manager chartgen --output config/chart`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return run(os.Stdin, outputDir, chartName, chartVersion)
+			return run(os.Stdin, outputDir, chartName, chartVersion, image)
 		},
 	}
 
 	cmd.Flags().StringVarP(&outputDir, "output", "o", defaultOutputDir, "Output directory for the chart")
 	cmd.Flags().StringVar(&chartName, "name", defaultChartName, "Chart name")
 	cmd.Flags().StringVar(&chartVersion, "version", defaultChartVer, "Chart version")
+	cmd.Flags().StringVar(&image, "image", "",
+		"Default image reference for values.yaml, overriding the one found in the Deployment")
 
 	return cmd
 }
@@ -77,6 +81,7 @@ func run(
 	outputDir string,
 	chartName string,
 	chartVersion string,
+	image string,
 ) error {
 	resources, err := decodeResources(reader)
 	if err != nil {
@@ -88,6 +93,9 @@ func run(
 
 	// Extract defaults from the Deployment resource
 	values := ExtractDefaults(resources)
+	if image != "" {
+		values.Image = imageSpecFor(image)
+	}
 
 	// Create output directories
 	templatesDir := filepath.Join(outputDir, templatesDirName)
@@ -110,6 +118,13 @@ func run(
 	// Write _helpers.tpl
 	if err := writeHelpersTpl(filepath.Join(templatesDir, helpersTplFilename)); err != nil {
 		return fmt.Errorf("writing %s: %w", helpersTplFilename, err)
+	}
+
+	// The upgrade-gate ConfigMap is not derived from the kustomize output, but it
+	// has to live in the generated chart: `make helm` recreates the whole tree,
+	// so a hand-written template here is deleted on the next regeneration.
+	if err := writeUpgradeGatesTpl(filepath.Join(templatesDir, upgradeGatesTplFilename)); err != nil {
+		return fmt.Errorf("writing %s: %w", upgradeGatesTplFilename, err)
 	}
 
 	// Write values.yaml
