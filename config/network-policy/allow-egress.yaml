@@ -3,8 +3,9 @@
 # module controller MUST NOT reconcile this object.
 #
 # Permits all outbound traffic.  The controller requires egress to the
-# Kubernetes API server (address varies per cluster), CoreDNS, and
-# container registries (init container image pull).  Narrower
+# Kubernetes API server (address varies per cluster) and CoreDNS.
+# Container image pulls are node-runtime traffic, not pod egress, so
+# they impose no NetworkPolicy requirement.  Narrower
 # NetworkPolicy rules cannot reliably represent these destinations, so
 # explicit allow-all egress is used per ADR §Explicit egress behavior.
 #

@@ -24,7 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/yaml"
 
-	"github.com/opendatahub-io/feast-module-operator/pkg/resources/gvk"
+	gvk "github.com/opendatahub-io/odh-platform-utilities/framework/cluster/gvk"
 )
 
 const (
@@ -322,7 +322,7 @@ func replaceImageField(raw string) string {
 		case strings.HasPrefix(trimmed, yamlFieldImage) && !strings.Contains(trimmed, "{{"):
 			indent := line[:len(line)-len(strings.TrimLeft(line, " "))]
 			result = append(result, indent+`image: "{{ include "chart.imageRef" . }}"`)
-			result = append(result, indent+"imagePullPolicy: Always")
+			result = append(result, indent+"imagePullPolicy: {{ .Values.image.pullPolicy }}")
 		case strings.HasPrefix(trimmed, yamlFieldImagePullPolicy):
 			// Drop the original -- the templated version is injected above.
 		default:

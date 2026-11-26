@@ -19,7 +19,7 @@ package v1alpha1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/opendatahub-io/opendatahub-operator/v2/api/common"
+	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 )
 
 const (
@@ -29,15 +29,29 @@ const (
 )
 
 // Compile-time interface assertions.
-var _ common.PlatformObject = (*FeastOperator)(nil)
-var _ common.WithReleases = (*FeastOperator)(nil)
+var _ fwapi.PlatformObject = (*FeastOperator)(nil)
+var _ fwapi.WithReleases = (*FeastOperator)(nil)
+
+// GatewayOIDCSpec is the minimal OIDC projection Feast needs for manifest
+// rendering. It is defined locally because the framework does not provide
+// an equivalent type (same shape and markers as the former
+// opendatahub-operator api/common type).
+type GatewayOIDCSpec struct {
+	// IssuerURL is the OIDC issuer URL (for example "https://keycloak.example.com/realms/myorg").
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Format=uri
+	// +kubebuilder:validation:Pattern=`^https://\S+$`
+	IssuerURL string `json:"issuerURL"`
+}
 
 // FeastOperatorSpec defines the desired state of FeastOperator.
 type FeastOperatorSpec struct {
 	// OIDC holds the OIDC issuer settings. When the cluster uses external OIDC
 	// the issuer URL is written to params.env before kustomize renders manifests.
 	// +optional
-	OIDC *common.GatewayOIDCSpec `json:"oidc,omitempty"`
+	OIDC *GatewayOIDCSpec `json:"oidc,omitempty"`
 
 	// Capabilities declares the desired state for Feature Store and Data Registry.
 	// When present, these values are authoritative and override process-level
@@ -79,8 +93,8 @@ type CapabilitySpec struct {
 
 // FeastOperatorStatus defines the observed state of FeastOperator.
 type FeastOperatorStatus struct {
-	common.Status                 `json:",inline"`
-	common.ComponentReleaseStatus `json:",inline"`
+	fwapi.Status                 `json:",inline"`
+	fwapi.ComponentReleaseStatus `json:",inline"`
 }
 
 // +kubebuilder:object:root=true
@@ -99,23 +113,23 @@ type FeastOperator struct {
 	Status FeastOperatorStatus `json:"status,omitempty"`
 }
 
-func (c *FeastOperator) GetStatus() *common.Status {
+func (c *FeastOperator) GetStatus() *fwapi.Status {
 	return &c.Status.Status
 }
 
-func (c *FeastOperator) GetConditions() []common.Condition {
+func (c *FeastOperator) GetConditions() []fwapi.Condition {
 	return c.Status.GetConditions()
 }
 
-func (c *FeastOperator) SetConditions(conditions []common.Condition) {
+func (c *FeastOperator) SetConditions(conditions []fwapi.Condition) {
 	c.Status.SetConditions(conditions)
 }
 
-func (c *FeastOperator) GetReleaseStatus() *common.ComponentReleaseStatus {
+func (c *FeastOperator) GetReleaseStatus() *fwapi.ComponentReleaseStatus {
 	return &c.Status.ComponentReleaseStatus
 }
 
-func (c *FeastOperator) SetReleaseStatus(status common.ComponentReleaseStatus) {
+func (c *FeastOperator) SetReleaseStatus(status fwapi.ComponentReleaseStatus) {
 	c.Status.ComponentReleaseStatus = status
 }
 

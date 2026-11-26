@@ -23,10 +23,10 @@ import (
 	"github.com/blang/semver/v4"
 
 	componentApi "github.com/opendatahub-io/feast-module-operator/api/components/v1alpha1"
-	odhtypes "github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/types"
+	fwtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 )
 
-func (m *Module) upgradeIfNeeded(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+func (m *Module) upgradeIfNeeded(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
 	obj, ok := rr.Instance.(*componentApi.FeastOperator)
 	if !ok {
 		return fmt.Errorf("instance is not a FeastOperator")
@@ -51,7 +51,7 @@ func (m *Module) upgradeIfNeeded(ctx context.Context, rr *odhtypes.Reconciliatio
 
 // upgrade runs idempotent migrations when the platform version advances.
 // Add version-gated migrations here as needed.
-func (m *Module) upgrade(_ context.Context, prevVersion string, rr *odhtypes.ReconciliationRequest) error {
+func (m *Module) upgrade(_ context.Context, prevVersion string, rr *fwtypes.ReconciliationRequest) error {
 	_ = prevVersion
 	_ = rr
 	return nil

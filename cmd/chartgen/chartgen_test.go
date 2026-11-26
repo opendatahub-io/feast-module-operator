@@ -21,8 +21,11 @@ spec:
   template:
     spec:
       containers:
-      - name: manager
+      - command:
+        - /manager
+        name: manager
         image: controller:latest
+        imagePullPolicy: Always
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -147,6 +150,9 @@ func TestRunImageFlagOverridesDeployment(t *testing.T) {
 	if !strings.Contains(values, "tag: odh-stable") {
 		t.Errorf("values.yaml does not use the image tag override:\n%s", values)
 	}
+	if !strings.Contains(values, "pullPolicy: Always") {
+		t.Errorf("values.yaml loses the default pull policy across the image override:\n%s", values)
+	}
 }
 
 // TestRunWithoutImageFlagKeepsDeploymentImage documents the default behaviour
@@ -160,6 +166,9 @@ func TestRunWithoutImageFlagKeepsDeploymentImage(t *testing.T) {
 	}
 	if !strings.Contains(values, "tag: latest") {
 		t.Errorf("values.yaml does not keep the Deployment image tag:\n%s", values)
+	}
+	if !strings.Contains(values, "pullPolicy: Always") {
+		t.Errorf("values.yaml does not serialize the default pull policy:\n%s", values)
 	}
 }
 

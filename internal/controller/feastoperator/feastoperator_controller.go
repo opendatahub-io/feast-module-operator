@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 
-	promv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -34,22 +33,21 @@ import (
 
 	componentApi "github.com/opendatahub-io/feast-module-operator/api/components/v1alpha1"
 	moduleconfig "github.com/opendatahub-io/feast-module-operator/pkg/config"
-	"github.com/opendatahub-io/opendatahub-operator/v2/api/common"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/actions/deploy"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/actions/gc"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/actions/render/kustomize"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/actions/status/deployments"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/handlers"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/predicates"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/predicates/component"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/predicates/resources"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/reconciler"
-	odhtypes "github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/types"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/metadata/labels"
-
 	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
+	gvk "github.com/opendatahub-io/odh-platform-utilities/framework/cluster/gvk"
+	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions"
+	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/deploy"
+	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/gc"
+	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/render/kustomize"
+	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/status/deployments"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/status/releases"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
+	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/handlers"
+	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/predicates"
+	labelpred "github.com/opendatahub-io/odh-platform-utilities/framework/controller/predicates/label"
+	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/predicates/resources"
+	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/reconciler"
+	fwtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 )
 
 // +kubebuilder:rbac:groups=components.platform.opendatahub.io,resources=feastoperators,verbs=get;list;watch;create;update;patch;delete
@@ -94,7 +92,7 @@ func NewReconciler(
 	ctx context.Context,
 	mgr ctrl.Manager,
 	cfg *moduleconfig.Config,
-	rel common.Release,
+	rel fwapi.Release,
 ) error {
 	m, err := NewModule(cfg)
 	if err != nil {
@@ -102,7 +100,7 @@ func NewReconciler(
 	}
 	m.recorder = mgr.GetEventRecorder(componentName)
 
-	r, err := reconciler.ReconcilerFor(mgr, &componentApi.FeastOperator{}).
+	_, err = reconciler.ReconcilerFor(mgr, &componentApi.FeastOperator{}).
 		Owns(&corev1.ConfigMap{}, reconciler.WithPredicates(capabilitiesConfigMapWatchPredicate())).
 		Owns(&rbacv1.RoleBinding{}).
 		Owns(&rbacv1.Role{}).
@@ -112,13 +110,13 @@ func NewReconciler(
 		Owns(&corev1.Service{}).
 		Owns(&appsv1.Deployment{}, reconciler.WithPredicates(predicates.DefaultDeploymentPredicate)).
 		Owns(&batchv1.Job{}).
-		Owns(&promv1.ServiceMonitor{}).
+		OwnsGVK(gvk.CoreosServiceMonitor).
 		Watches(
 			&extv1.CustomResourceDefinition{},
 			reconciler.WithEventHandler(
 				handlers.ToNamed(componentApi.FeastOperatorInstanceName)),
 			reconciler.WithPredicates(
-				component.ForLabel(labels.ODH.Component(componentName), labels.True)),
+				labelpred.ForLabel(componentLabelKey, componentLabelValue)),
 		).
 		Watches(
 			&corev1.ConfigMap{},
@@ -134,23 +132,25 @@ func NewReconciler(
 		WithAction(m.reconcileCapabilitiesConfigMap).
 		WithAction(releases.NewAction()).
 		WithAction(m.reconcilePlatformVersion).
-		WithAction(kustomize.NewAction(
-			kustomize.WithLabel(labels.ODH.Component(componentName), labels.True),
-			kustomize.WithLabel(labels.K8SCommon.PartOf, componentName),
-		)).
+		WithAction(m.newRenderAction(cfg)).
 		WithAction(m.migrateDeploymentSelector).
 		WithAction(deploy.NewAction(
 			deploy.WithCache(),
 			deploy.WithApplyOrder(),
 		)).
 		WithAction(m.triggerCapabilityRolloutIfNeeded).
-		WithAction(deployments.NewAction()).
+		WithAction(deployments.NewAction(
+			deployments.InNamespace(cfg.ApplicationsNamespace),
+		)).
 		WithAction(gc.NewAction(
-			gc.InNamespace(cfg.ApplicationsNamespace),
+			applicationsNamespaceGetter(cfg),
 		)).
 		WithFinalizer(m.cleanupClusterResources).
 		WithConditions(
 			conditions.Dependent(fwapi.ConditionType("DeploymentsAvailable"), conditions.HealthyWhenTrue),
+		).
+		WithReconcilerOpts(
+			reconciler.WithRelease(rel),
 		).
 		Build(ctx)
 
@@ -158,9 +158,21 @@ func NewReconciler(
 		return err
 	}
 
-	r.Release = rel
-
 	return nil
+}
+
+// newRenderAction builds the production kustomize render action. It injects
+// the Module's copy-on-write manifest filesystem — the same instance the
+// startup image replacement and setKustomizedParams write into — so
+// rendering observes the applied params.env values while the physical
+// manifests directory is never written.
+func (m *Module) newRenderAction(cfg *moduleconfig.Config) actions.Fn {
+	return kustomize.NewAction(
+		kustomize.WithEngineFS(m.kustomizeFS),
+		kustomize.WithLabel(componentLabelKey, componentLabelValue),
+		kustomize.WithLabel(partOfLabelKey, componentName),
+		kustomize.WithNamespaceFn(applicationsNamespaceGetter(cfg)),
+	)
 }
 
 // capabilitiesConfigMapWatchPredicate preserves the standard owned-resource
@@ -185,6 +197,16 @@ func capabilitiesConfigMapWatchPredicate() predicate.Predicate {
 	)
 }
 
+// applicationsNamespaceGetter returns the applications namespace getter shared by
+// the kustomize render action (as the default namespace for rendered resources,
+// replacing the removed cluster.SetRHAIApplicationNamespace global) and the gc
+// action (as the namespace for its RBAC rules review).
+func applicationsNamespaceGetter(cfg *moduleconfig.Config) func(context.Context, *fwtypes.ReconciliationRequest) (string, error) {
+	return func(_ context.Context, _ *fwtypes.ReconciliationRequest) (string, error) {
+		return cfg.ApplicationsNamespace, nil
+	}
+}
+
 // cleanupClusterResources removes cluster-scoped resources (ClusterRoles, ClusterRoleBindings)
 // that cannot use ownerReferences for garbage collection.
 //
@@ -194,7 +216,7 @@ func capabilitiesConfigMapWatchPredicate() predicate.Predicate {
 // delete+create cycle. Deferring cleanup when capabilities are still Managed
 // creates a deadlock: the CR is being deleted so its spec.capabilities will
 // never change, but the finalizer waits for them to become Removed.
-func (m *Module) cleanupClusterResources(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+func (m *Module) cleanupClusterResources(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
 	log := logf.FromContext(ctx)
 
 	if _, ok := rr.Instance.(*componentApi.FeastOperator); !ok {
@@ -203,7 +225,7 @@ func (m *Module) cleanupClusterResources(ctx context.Context, rr *odhtypes.Recon
 
 	listOpts := []client.ListOption{
 		client.MatchingLabels{
-			labels.ODH.Component(componentName): labels.True,
+			componentLabelKey: componentLabelValue,
 		},
 	}
 

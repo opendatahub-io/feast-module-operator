@@ -13,6 +13,14 @@
         },
         "fullRef": {
           "type": "string"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
         }
       },
       "additionalProperties": false,
@@ -20,7 +28,8 @@
       "required": [
         "repository",
         "tag",
-        "fullRef"
+        "fullRef",
+        "pullPolicy"
       ]
     },
     "ResourceList": {

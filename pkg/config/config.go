@@ -26,7 +26,7 @@ import (
 	"github.com/blang/semver/v4"
 	"github.com/spf13/viper"
 
-	"github.com/opendatahub-io/opendatahub-operator/v2/api/common"
+	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 	ofVersion "github.com/operator-framework/api/pkg/lib/version"
 )
 
@@ -48,8 +48,15 @@ const (
 	KeyFeatureStoreEnabled = "feature-store-enabled"
 	KeyDataRegistryEnabled = "data-registry-enabled"
 
-	DefaultApplicationsNS  = "opendatahub"
-	DefaultPlatformType    = "unknown"
+	DefaultApplicationsNS = "opendatahub"
+
+	// DefaultPlatformType is the platform type used when the platform-type
+	// config key and ODH_MODULE_OPERATOR_PLATFORM_TYPE env var are both
+	// unset. ODH is the community default and matches the reference
+	// module's behavior; overlay selection is unaffected because OverlayFor
+	// already routed unknown to the ODH overlay via its default case.
+	DefaultPlatformType = PlatformTypeOpenDataHub
+
 	DefaultPlatformVersion = "unknown"
 
 	DefaultMetricsBindAddr    = ":8080"
@@ -71,6 +78,48 @@ const (
 	EnvPrefix = "ODH_MODULE_OPERATOR"
 )
 
+// PlatformType is the platform the operator is running on, as reported by
+// the orchestrator through the platform-type config key.
+type PlatformType string
+
+const (
+	// Platform-type display names, matching the values written by the
+	// orchestrator / Makefile into the platform-type config key.
+	PlatformTypeUnknown          PlatformType = "unknown"
+	PlatformTypeOpenDataHub      PlatformType = "Open Data Hub"
+	PlatformTypeSelfManagedRhoai PlatformType = "OpenShift AI Self-Managed"
+	PlatformTypeManagedRhoai     PlatformType = "OpenShift AI Cloud Service"
+)
+
+// ParsePlatformType normalizes a raw config value to a known PlatformType.
+// It accepts the exact display-name constants ("Open Data Hub",
+// "OpenShift AI Self-Managed", "OpenShift AI Cloud Service") plus their
+// identifier forms ("OpenDataHub", "SelfManagedRhoai", "ManagedRhoai") as a
+// safety net for emitters (e.g. older Makefile invocations) that produce
+// Go-style identifiers. All other values, including "" and any other
+// variant, return PlatformTypeUnknown (lenient by design — preserves the
+// "unknown → ODH overlay" fallback).
+func ParsePlatformType(s string) PlatformType {
+	switch pt := PlatformType(s); pt {
+	case PlatformTypeOpenDataHub,
+		PlatformTypeSelfManagedRhoai,
+		PlatformTypeManagedRhoai:
+		return pt
+	}
+
+	// Identifier forms: exact matches only, case-sensitive.
+	switch s {
+	case "OpenDataHub":
+		return PlatformTypeOpenDataHub
+	case "SelfManagedRhoai":
+		return PlatformTypeSelfManagedRhoai
+	case "ManagedRhoai":
+		return PlatformTypeManagedRhoai
+	}
+
+	return PlatformTypeUnknown
+}
+
 // structuredExtensions is the set of file extensions that are parsed as
 // structured config (YAML, JSON) rather than simple key-value pairs.
 var structuredExtensions = map[string]bool{
@@ -91,7 +140,7 @@ var structuredExtensions = map[string]bool{
 type Config struct {
 	ManifestsPath         string           `mapstructure:"manifests-path"`
 	ApplicationsNamespace string           `mapstructure:"applications-namespace"`
-	PlatformType          string           `mapstructure:"platform-type"`
+	PlatformType          PlatformType     `mapstructure:"platform-type"`
 	PlatformVersion       string           `mapstructure:"platformVersion"`
 	FeatureStoreEnabled   bool             `mapstructure:"feature-store-enabled"`
 	DataRegistryEnabled   bool             `mapstructure:"data-registry-enabled"`
@@ -129,12 +178,12 @@ type PprofConfig struct {
 	BindAddress string `mapstructure:"bind-address"`
 }
 
-// Release builds a common.Release from the configured platform type and
+// Release builds a fwapi.Release from the configured platform type and
 // version. If PlatformVersion is not valid semver, the version defaults
 // to 0.0.0.
-func (c *Config) Release() common.Release {
-	rel := common.Release{
-		Name: common.Platform(c.PlatformType),
+func (c *Config) Release() fwapi.Release {
+	rel := fwapi.Release{
+		Name: fwapi.Platform(c.PlatformType),
 	}
 
 	if c.PlatformVersion != "" {

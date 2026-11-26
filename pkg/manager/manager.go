@@ -22,17 +22,17 @@ import (
 	"time"
 
 	configv1 "github.com/openshift/api/config/v1"
-	promv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
-	"github.com/spf13/viper"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	k8slabels "k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	toolscache "k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -42,14 +42,16 @@ import (
 	componentsv1alpha1 "github.com/opendatahub-io/feast-module-operator/api/components/v1alpha1"
 	"github.com/opendatahub-io/feast-module-operator/internal/controller/feastoperator"
 	moduleconfig "github.com/opendatahub-io/feast-module-operator/pkg/config"
-	odhmanager "github.com/opendatahub-io/odh-platform-utilities/framework/manager"
-	libcache "github.com/opendatahub-io/odh-platform-utilities/pkg/cache"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/cluster"
+	fwmanager "github.com/opendatahub-io/odh-platform-utilities/framework/manager"
 )
 
 const (
 	healthCheckName = "healthz"
 	readyCheckName  = "readyz"
+
+	// annotationLastAppliedConfiguration is the annotation added by
+	// kubectl apply that is unnecessary when using server-side apply.
+	annotationLastAppliedConfiguration = "kubectl.kubernetes.io/last-applied-configuration"
 )
 
 type Option func(*ctrl.Options)
@@ -59,7 +61,6 @@ func NewScheme() *runtime.Scheme {
 
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
-	utilruntime.Must(promv1.AddToScheme(scheme))
 	utilruntime.Must(componentsv1alpha1.AddToScheme(scheme))
 
 	return scheme
@@ -98,9 +99,6 @@ func New(
 		return nil, fmt.Errorf("resolving metrics TLS options: %w", err)
 	}
 
-	viper.Set("rhai-applications-namespace", cfg.ApplicationsNamespace)
-	cluster.SetRHAIApplicationNamespace(cfg.ApplicationsNamespace)
-
 	// Namespace-scoped cache config: scope informers to the applications
 	// namespace so the operator only watches its own resources.
 	nsCache := map[string]cache.Config{
@@ -121,7 +119,7 @@ func New(
 		LeaderElectionID:              cfg.Controller.LeaderElection.ID,
 		LeaderElectionReleaseOnCancel: true,
 		Cache: cache.Options{
-			DefaultTransform: libcache.StripUnusedFields(),
+			DefaultTransform: stripUnusedFields(),
 			ByObject: map[client.Object]cache.ByObject{
 				&componentsv1alpha1.FeastOperator{}:         {Label: k8slabels.Everything()},
 				&apiextensionsv1.CustomResourceDefinition{}: {Label: k8slabels.Everything()},
@@ -157,9 +155,9 @@ func New(
 		return nil, fmt.Errorf("creating manager: %w", err)
 	}
 
-	mgr := odhmanager.New(
+	mgr := fwmanager.New(
 		ctrlMgr,
-		odhmanager.WithManifestsBasePath(cfg.ManifestsPath),
+		fwmanager.WithManifestsBasePath(cfg.ManifestsPath),
 	)
 
 	if err := feastoperator.NewReconciler(ctx, mgr, cfg, cfg.Release()); err != nil {
@@ -178,4 +176,31 @@ func New(
 	}
 
 	return mgr, nil
+}
+
+// stripUnusedFields returns a cache transform that removes managedFields
+// and the last-applied-configuration annotation from cached objects.
+// Both are unnecessary when using server-side apply.
+//
+// Inlined from odh-platform-utilities/pkg/cache StripUnusedFields
+// (Apache-2.0) to drop the root-module dependency.
+func stripUnusedFields() toolscache.TransformFunc {
+	return func(obj any) (any, error) {
+		accessor, err := meta.Accessor(obj)
+		if err != nil {
+			// non-k8s objects pass through unchanged
+			//nolint:nilerr
+			return obj, nil
+		}
+
+		accessor.SetManagedFields(nil)
+
+		annotations := accessor.GetAnnotations()
+		if annotations != nil {
+			delete(annotations, annotationLastAppliedConfiguration)
+			accessor.SetAnnotations(annotations)
+		}
+
+		return obj, nil
+	}
 }

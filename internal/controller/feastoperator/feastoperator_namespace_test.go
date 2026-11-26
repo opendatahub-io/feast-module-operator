@@ -30,7 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	componentApi "github.com/opendatahub-io/feast-module-operator/api/components/v1alpha1"
-	odhtypes "github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/types"
+	fwtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 )
 
 func initNamespaceTestScheme() *runtime.Scheme {
@@ -48,7 +48,7 @@ func TestReconcileDataRegistryNamespaceCreatesNamespace(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(feast).Build()
 
 	m := newCapabilitiesTestModule(t, true, true)
-	rr := &odhtypes.ReconciliationRequest{
+	rr := &fwtypes.ReconciliationRequest{
 		Instance: feast,
 		Client:   cl,
 	}
@@ -74,7 +74,7 @@ func TestReconcileDataRegistryNamespaceLabelsExistingNamespace(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(feast, existing).Build()
 
 	m := newCapabilitiesTestModule(t, true, true)
-	rr := &odhtypes.ReconciliationRequest{
+	rr := &fwtypes.ReconciliationRequest{
 		Instance: feast,
 		Client:   cl,
 	}
@@ -94,7 +94,7 @@ func TestReconcileDataRegistryNamespaceSkippedWhenDisabled(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(feast).Build()
 
 	m := newCapabilitiesTestModule(t, true, false)
-	rr := &odhtypes.ReconciliationRequest{
+	rr := &fwtypes.ReconciliationRequest{
 		Instance: feast,
 		Client:   cl,
 	}
@@ -119,7 +119,7 @@ func TestReconcileDataRegistryNamespaceSkippedWhenDRRemovedInSpec(t *testing.T) 
 
 	// Even though env says DR=true, spec.capabilities says Removed — spec wins
 	m := newCapabilitiesTestModule(t, true, true)
-	rr := &odhtypes.ReconciliationRequest{
+	rr := &fwtypes.ReconciliationRequest{
 		Instance: feast,
 		Client:   cl,
 	}
@@ -152,7 +152,7 @@ func TestReconcileDataRegistryNamespaceRemovesLabelWhenDisabled(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(feast, existing).Build()
 
 	m := newCapabilitiesTestModule(t, true, true)
-	rr := &odhtypes.ReconciliationRequest{
+	rr := &fwtypes.ReconciliationRequest{
 		Instance: feast,
 		Client:   cl,
 	}
@@ -173,7 +173,7 @@ func TestReconcileDataRegistryNamespaceNoopWhenDisabledAndNoNamespace(t *testing
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(feast).Build()
 
 	m := newCapabilitiesTestModule(t, false, false)
-	rr := &odhtypes.ReconciliationRequest{
+	rr := &fwtypes.ReconciliationRequest{
 		Instance: feast,
 		Client:   cl,
 	}

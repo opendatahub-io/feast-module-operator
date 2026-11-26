@@ -12,12 +12,16 @@ import (
 	componentsv1alpha1 "github.com/opendatahub-io/feast-module-operator/api/components/v1alpha1"
 	feastoperatorcontroller "github.com/opendatahub-io/feast-module-operator/internal/controller/feastoperator"
 	"github.com/opendatahub-io/feast-module-operator/test/support"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/metadata/labels"
 )
 
 const (
 	capabilitiesConfigMapName = "feast-capabilities-config"
 	dataRegistryNamespaceName = "rhoai-data-registry"
+
+	// componentLabelKey mirrors the ODH component label the controller
+	// applies to the capabilities ConfigMap (app.opendatahub.io/feastoperator).
+	componentLabelKey   = "app.opendatahub.io/" + componentsv1alpha1.FeastOperatorComponentName
+	componentLabelValue = "true"
 )
 
 type capabilityTests struct {
@@ -42,7 +46,7 @@ func (ct *capabilityTests) testCapabilitiesConfigMap(t *testing.T) {
 		}, cm)).To(Succeed())
 		g.Expect(cm.Data["featureStoreEnabled"]).To(Equal("true"))
 		g.Expect(cm.Data["dataRegistryEnabled"]).To(Equal("true"))
-		g.Expect(cm.Labels[labels.ODH.Component(componentsv1alpha1.FeastOperatorComponentName)]).To(Equal(labels.True))
+		g.Expect(cm.Labels[componentLabelKey]).To(Equal(componentLabelValue))
 		g.Expect(cm.OwnerReferences).To(HaveLen(1))
 		g.Expect(cm.OwnerReferences[0].Kind).To(Equal("FeastOperator"))
 		g.Expect(cm.Finalizers).To(ContainElement(feastoperatorcontroller.CapabilitiesConfigMapFinalizer))

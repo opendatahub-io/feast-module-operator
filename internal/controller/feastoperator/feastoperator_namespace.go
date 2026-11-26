@@ -29,7 +29,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	componentApi "github.com/opendatahub-io/feast-module-operator/api/components/v1alpha1"
-	odhtypes "github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/types"
+	fwtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 )
 
 const (
@@ -43,7 +43,7 @@ const (
 //
 // The namespace is always rhoai-data-registry (hardcoded). Custom namespace
 // selection is deferred.
-func (m *Module) reconcileDataRegistryNamespace(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+func (m *Module) reconcileDataRegistryNamespace(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
 	feast, ok := rr.Instance.(*componentApi.FeastOperator)
 	if !ok {
 		return errors.New("instance is not a FeastOperator")
@@ -84,7 +84,7 @@ func (m *Module) reconcileDataRegistryNamespace(ctx context.Context, rr *odhtype
 // removeDataRegistryLabel removes the dataregistry.opendatahub.io/enabled label
 // from the Data Registry namespace when the capability is disabled. The namespace
 // itself is preserved to avoid deleting user data.
-func (m *Module) removeDataRegistryLabel(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+func (m *Module) removeDataRegistryLabel(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
 	log := logf.FromContext(ctx)
 
 	ns := &corev1.Namespace{}

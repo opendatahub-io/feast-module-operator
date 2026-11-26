@@ -30,7 +30,7 @@ import (
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/yaml"
 
-	"github.com/opendatahub-io/feast-module-operator/pkg/resources/gvk"
+	gvk "github.com/opendatahub-io/odh-platform-utilities/framework/cluster/gvk"
 )
 
 const (
@@ -94,7 +94,12 @@ func run(
 	// Extract defaults from the Deployment resource
 	values := ExtractDefaults(resources)
 	if image != "" {
-		values.Image = imageSpecFor(image)
+		// The override replaces the image coordinates wholesale; the pull
+		// policy is orthogonal to the reference, so the extracted/default
+		// value must survive the replacement.
+		spec := imageSpecFor(image)
+		spec.PullPolicy = values.Image.PullPolicy
+		values.Image = spec
 	}
 
 	// Create output directories

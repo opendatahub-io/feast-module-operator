@@ -35,8 +35,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	componentApi "github.com/opendatahub-io/feast-module-operator/api/components/v1alpha1"
-	odhtypes "github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/types"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/metadata/labels"
+	fwtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 )
 
 const (
@@ -88,7 +87,7 @@ func boolString(value bool) string {
 //  2. Otherwise fall back to process-level environment defaults (backward compat).
 //
 // The data registry namespace is always rhoai-data-registry (hardcoded).
-func (m *Module) reconcileCapabilitiesConfigMap(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+func (m *Module) reconcileCapabilitiesConfigMap(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
 	log := logf.FromContext(ctx)
 
 	feast, ok := rr.Instance.(*componentApi.FeastOperator)
@@ -115,7 +114,7 @@ func (m *Module) reconcileCapabilitiesConfigMap(ctx context.Context, rr *odhtype
 		if cm.Labels == nil {
 			cm.Labels = map[string]string{}
 		}
-		cm.Labels[labels.ODH.Component(componentName)] = labels.True
+		cm.Labels[componentLabelKey] = componentLabelValue
 		controllerutil.AddFinalizer(cm, CapabilitiesConfigMapFinalizer)
 		cm.Data = map[string]string{
 			capabilitiesKeyFeatureStoreEnabled: boolString(fsEnabled),
@@ -169,7 +168,7 @@ func (m *Module) resolveCapabilities(feast *componentApi.FeastOperator) (fsEnabl
 // pod template with a hash of the capabilities ConfigMap data. The upstream operator
 // reads the ConfigMap at startup only, so updating the ConfigMap alone is not enough;
 // the annotation change triggers a rolling restart.
-func (m *Module) triggerCapabilityRolloutIfNeeded(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+func (m *Module) triggerCapabilityRolloutIfNeeded(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
 	log := logf.FromContext(ctx)
 
 	cm := &corev1.ConfigMap{}
@@ -243,7 +242,7 @@ func capabilitiesDataHash(data map[string]string) string {
 
 // getCapabilitiesConfigMap reads the capabilities ConfigMap. Not-found is not
 // an error; callers treat a missing ConfigMap as nothing to hand over.
-func (m *Module) getCapabilitiesConfigMap(ctx context.Context, rr *odhtypes.ReconciliationRequest) (*corev1.ConfigMap, error) {
+func (m *Module) getCapabilitiesConfigMap(ctx context.Context, rr *fwtypes.ReconciliationRequest) (*corev1.ConfigMap, error) {
 	cm := &corev1.ConfigMap{}
 	if err := rr.Client.Get(ctx, client.ObjectKey{
 		Name:      capabilitiesConfigMapName,
@@ -263,7 +262,7 @@ func (m *Module) getCapabilitiesConfigMap(ctx context.Context, rr *odhtypes.Reco
 // teardown intent. The same update records capabilitiesCleanupStartedAnnotation
 // once. The write is skipped when both flags are already disabled and that
 // annotation is set.
-func (m *Module) markCapabilitiesDisabled(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+func (m *Module) markCapabilitiesDisabled(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
 	cm, err := m.getCapabilitiesConfigMap(ctx, rr)
 	if err != nil || cm == nil {
 		return err
@@ -298,7 +297,7 @@ func (m *Module) markCapabilitiesDisabled(ctx context.Context, rr *odhtypes.Reco
 // deleteCapabilitiesConfigMap issues the ConfigMap delete without removing
 // the module finalizer. The ConfigMap stays in Terminating, held by the
 // module and feast operator finalizers, until both have completed cleanup.
-func (m *Module) deleteCapabilitiesConfigMap(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+func (m *Module) deleteCapabilitiesConfigMap(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
 	cm, err := m.getCapabilitiesConfigMap(ctx, rr)
 	if err != nil || cm == nil {
 		return err
@@ -320,7 +319,7 @@ func (m *Module) deleteCapabilitiesConfigMap(ctx context.Context, rr *odhtypes.R
 // capabilitiesCleanupStartedAnnotation: after feastOperatorReleaseTimeout the
 // module emits a Warning event and proceeds without the feast operator,
 // leaving manual cleanup of the stuck Terminating ConfigMap as the recovery path.
-func (m *Module) waitForFeastOperatorRelease(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+func (m *Module) waitForFeastOperatorRelease(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
 	log := logf.FromContext(ctx)
 
 	cm, err := m.getCapabilitiesConfigMap(ctx, rr)
@@ -373,7 +372,7 @@ func (m *Module) waitForFeastOperatorRelease(ctx context.Context, rr *odhtypes.R
 // releaseCapabilitiesConfigMap removes the module finalizer from the
 // Terminating capabilities ConfigMap, allowing the API server to complete
 // the deletion once the feast operator finalizer is gone too.
-func (m *Module) releaseCapabilitiesConfigMap(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
+func (m *Module) releaseCapabilitiesConfigMap(ctx context.Context, rr *fwtypes.ReconciliationRequest) error {
 	cm, err := m.getCapabilitiesConfigMap(ctx, rr)
 	if err != nil || cm == nil {
 		return err

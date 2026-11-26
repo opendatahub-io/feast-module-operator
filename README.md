@@ -42,6 +42,105 @@ make test
 make test-integration
 ```
 
+### Run E2E Tests (dedicated Kind cluster)
+
+```bash
+make test-e2e ODH_PLATFORM_TYPE=odh   # ODH variant
+make test-e2e ODH_PLATFORM_TYPE=rhoai # RHOAI variant (reuses the cluster)
+```
+
+Each invocation runs the full ordered workflow against the dedicated Kind
+cluster `feast-module-operator-e2e`:
+
+1. Preflight required tools and the container engine, then create the
+   cluster (Kind `v0.33.0`, pinned default node image, isolated kubeconfig
+   under a private scratch directory) or safely reuse it. The global
+   kubeconfig and current context are never modified.
+2. Install the OpenShift compatibility CRDs (`ServiceMonitor`, `APIServer`,
+   `Route` — API storage/validation only), create or verify the test-owned
+   namespace `opendatahub-feast-system`, and install the static
+   service-certificate fixtures (`controller-manager-metrics-tls` Secret and
+   `openshift-service-ca.crt` CA ConfigMap). No cert-manager and no
+   unrelated APIs.
+3. Build a uniquely tagged local controller image for the node
+   architecture through `make container-build` (bundled manifests and the
+   published chart defaults stay unchanged).
+4. Load that exact tag into every Kind node from a private image archive
+   (`kind load image-archive`) and verify the identity locally and inside
+   the node. The image is never pushed to a registry.
+5. Install/upgrade the generated chart through the pinned Helm (`v4.3.0`)
+   using the exact local image with `image.pullPolicy=Never`, the selected
+   platform type, and a digest reference for the Feast operand image
+   (resolved from the bundled overlay tag, textually distinct from it) so
+   static image substitution is observable.
+6. Wait for the module rollout, verify the running image identity, and run
+   the e2e suite (`test-e2e-run`) with the same kubeconfig, namespace, and
+   repository ldflags, with all Kind-only assertions enabled.
+
+Notes:
+
+- Provider behavior: an explicitly supplied `KIND_EXPERIMENTAL_PROVIDER` is
+  preserved; otherwise an existing cluster keeps the engine that owns it
+  (never silently switched), and a new cluster prefers Podman over Docker.
+  If the cluster exists in more than one available engine and no provider
+  was supplied, the run fails and asks for an explicit provider.
+- The namespace, Helm release, and fixtures are marked with the
+  `e2e.feast.dev/owner` annotation. Existing installations without
+  matching ownership block the run instead of being adopted.
+- Reruns are sequential and safe: each run builds a new unique image tag
+  (refreshing the module) and reuses the existing TLS Secret/CA pair after
+  validation, never replacing it.
+- A failed run preserves the suite-owned `FeastOperator` singleton, the
+  operand resources, and the marked `odh-data-config` state for
+  inspection, after collecting diagnostics (events, pod status, image
+  identity, manager logs). The next authorized run recovers the recorded
+  fixture state through the ownership markers and still executes teardown
+  coverage. Unknown or conflicting ownership fails closed.
+- The suite verifies the module Deployment/Pod carry no `copy-manifests`
+  init container or `manifests` emptyDir/mount, keep a read-only manager
+  root filesystem with `ODH_MODULE_OPERATOR_MANIFESTS_PATH=/manifests`,
+  project the substituted Feast image into the operand, observe OIDC
+  issuer set/update/removal, and retain image replacements and live OIDC
+  values across a module restart.
+
+Standalone suite (operator already deployed through any means):
+
+```bash
+make test-e2e-run OPERATOR_NAMESPACE=opendatahub-feast-system
+```
+
+Standalone runs keep `E2E_KIND_CHECKS=false` and the existing core suite;
+the Kind-only assertions are explicitly reported as skipped. Opt in with
+`E2E_KIND_CHECKS=true E2E_KIND_CLUSTER=<cluster> E2E_EXPECTED_FEAST_IMAGE=<digest-ref>`
+(and `KUBECONFIG` pointing at the cluster); missing inputs fail the run
+instead of skipping.
+
+Cluster lifecycle:
+
+```bash
+make test-e2e-kind-setup  # create (or reuse) and configure the cluster only
+make test-e2e-kind-delete # delete only the dedicated cluster
+```
+
+Limitations:
+
+- Kind e2e is not an OpenShift certification test: the compatibility CRDs
+  and static TLS fixtures provide API storage/validation only; routing,
+  service-ca rotation, and Prometheus reconciliation are not implemented.
+- Known metrics limitation: framework namespace overrides happen after
+  Kustomize replacements, so RHOAI ServiceMonitor DNS fields may retain the
+  overlay namespace. Without Prometheus reconciliation this suite does not
+  certify functional metrics TLS discovery.
+- Known RHOAI limitation: the committed RHOAI overlay
+  (`config/manifests/feastoperator/overlays/rhoai/manager_patch.yaml`) passes
+  `--metrics-cert-path` to the operand manager, a flag the pinned upstream
+  `feastdev/feast-operator` image does not define, so the operand crash-loops
+  and `make test-e2e ODH_PLATFORM_TYPE=rhoai` fails at readiness. This is a
+  pre-existing overlay bug unrelated to the Kind workflow; the ODH variant is
+  the supported e2e path until the overlay is fixed (the operand's own
+  `--metrics-bind-address=:8443` secure metrics needs no cert mount).
+
+
 ### Operator Chaos Validation
 
 This repository uses [operator-chaos](https://github.com/opendatahub-io/operator-chaos)

@@ -33,9 +33,7 @@ import (
 
 	componentApi "github.com/opendatahub-io/feast-module-operator/api/components/v1alpha1"
 	moduleconfig "github.com/opendatahub-io/feast-module-operator/pkg/config"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/cluster"
-	odhtypes "github.com/opendatahub-io/opendatahub-operator/v2/pkg/controller/types"
-	"github.com/opendatahub-io/opendatahub-operator/v2/pkg/metadata/labels"
+	fwtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 )
 
 func initCapabilitiesTestScheme() *runtime.Scheme {
@@ -50,7 +48,7 @@ func newCapabilitiesTestModule(t *testing.T, featureStoreEnabled, dataRegistryEn
 
 	repoRoot := filepath.Join("..", "..", "..")
 	cfg := &moduleconfig.Config{
-		PlatformType:          string(cluster.OpenDataHub),
+		PlatformType:          moduleconfig.PlatformTypeOpenDataHub,
 		PlatformVersion:       "1.0.0",
 		ManifestsPath:         filepath.Join(repoRoot, "config", "manifests"),
 		ApplicationsNamespace: "test-ns",
@@ -64,17 +62,17 @@ func newCapabilitiesTestModule(t *testing.T, featureStoreEnabled, dataRegistryEn
 	return m
 }
 
-func newCapabilitiesRR(t *testing.T, cl client.Client, obj *componentApi.FeastOperator, m *Module) *odhtypes.ReconciliationRequest {
+func newCapabilitiesRR(t *testing.T, cl client.Client, obj *componentApi.FeastOperator, m *Module) *fwtypes.ReconciliationRequest {
 	t.Helper()
 	g := NewWithT(t)
 
 	repoRoot := filepath.Join("..", "..", "..")
-	rr := &odhtypes.ReconciliationRequest{
+	rr := &fwtypes.ReconciliationRequest{
 		Instance:          obj,
 		Client:            cl,
 		ManifestsBasePath: filepath.Join(repoRoot, "config", "manifests"),
 		Release: (&moduleconfig.Config{
-			PlatformType:    string(cluster.OpenDataHub),
+			PlatformType:    moduleconfig.PlatformTypeOpenDataHub,
 			PlatformVersion: "1.0.0",
 		}).Release(),
 	}
@@ -101,7 +99,7 @@ func TestReconcileCapabilitiesConfigMapCreatesConfigMap(t *testing.T) {
 	}, cm)).To(Succeed())
 	g.Expect(cm.Data[capabilitiesKeyFeatureStoreEnabled]).To(Equal("true"))
 	g.Expect(cm.Data[capabilitiesKeyDataRegistryEnabled]).To(Equal("false"))
-	g.Expect(cm.Labels[labels.ODH.Component(componentName)]).To(Equal(labels.True))
+	g.Expect(cm.Labels[componentLabelKey]).To(Equal(componentLabelValue))
 	g.Expect(cm.OwnerReferences).To(HaveLen(1))
 	g.Expect(cm.OwnerReferences[0].Name).To(Equal(componentApi.FeastOperatorInstanceName))
 	g.Expect(cm.Finalizers).To(ContainElement(CapabilitiesConfigMapFinalizer))
@@ -331,7 +329,7 @@ func TestTriggerCapabilityRolloutAnnotatesDeployment(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(feast, cm, deploy).Build()
 
 	m := newCapabilitiesTestModule(t, true, false)
-	rr := &odhtypes.ReconciliationRequest{
+	rr := &fwtypes.ReconciliationRequest{
 		Instance: feast,
 		Client:   cl,
 	}
@@ -390,7 +388,7 @@ func TestTriggerCapabilityRolloutSkipsWhenHashUnchanged(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(feast, cm, deploy).Build()
 
 	m := newCapabilitiesTestModule(t, true, false)
-	rr := &odhtypes.ReconciliationRequest{
+	rr := &fwtypes.ReconciliationRequest{
 		Instance: feast,
 		Client:   cl,
 	}
@@ -423,7 +421,7 @@ func TestTriggerCapabilityRolloutSkipsWhenNoDeployment(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(feast, cm).Build()
 
 	m := newCapabilitiesTestModule(t, true, false)
-	rr := &odhtypes.ReconciliationRequest{
+	rr := &fwtypes.ReconciliationRequest{
 		Instance: feast,
 		Client:   cl,
 	}
@@ -439,7 +437,7 @@ func TestTriggerCapabilityRolloutSkipsWhenNoConfigMap(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(feast).Build()
 
 	m := newCapabilitiesTestModule(t, true, false)
-	rr := &odhtypes.ReconciliationRequest{
+	rr := &fwtypes.ReconciliationRequest{
 		Instance: feast,
 		Client:   cl,
 	}
