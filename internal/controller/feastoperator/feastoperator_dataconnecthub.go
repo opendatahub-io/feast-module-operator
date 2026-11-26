@@ -53,8 +53,8 @@ const (
 	dchReadyCondition = fwapi.ConditionType("DataConnectHubReady")
 	dchReleasePrefix  = "dataconnecthub/"
 	dchRetryInterval  = 10 * time.Second
-	dchNamespaceODH   = "odh-data-connect-hub-infra"
-	dchNamespaceRHOAI = "rhoai-data-connect-hub-infra"
+	dchNamespaceODH   = "odh-dch-infra"
+	dchNamespaceRHOAI = "redhat-dch-infra"
 )
 
 var dchServiceGVK = schema.GroupVersionKind{

@@ -92,7 +92,7 @@ spec:
                       namespace:
                         description: |-
                           Namespace contains DCH services, not the controller. Defaults to
-                          odh-data-connect-hub-infra on ODH or rhoai-data-connect-hub-infra on RHOAI.
+                          odh-dch-infra on ODH or redhat-dch-infra on RHOAI.
                         maxLength: 63
                         pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$
                         type: string

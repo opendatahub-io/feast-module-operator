@@ -31,7 +31,7 @@ spec:
       managementState: Removed
     dataConnectHub:
       managementState: Managed
-      namespace: odh-data-connect-hub-infra
+      namespace: odh-dch-infra
       gateway:
         name: odh-gateway
         namespace: opendatahub
@@ -48,8 +48,8 @@ An administrator must provision PostgreSQL and `dch-database-config` (containing
 `secret-config.toml`) in the DCH infrastructure namespace. This module does not create
 the database or its credentials. Missing prerequisites keep DCH not ready.
 
-The default infrastructure namespace is `odh-data-connect-hub-infra` on ODH and
-`rhoai-data-connect-hub-infra` on RHOAI. `namespace` overrides it. The DCH CR,
+The default infrastructure namespace is `odh-dch-infra` on ODH and
+`redhat-dch-infra` on RHOAI. `namespace` overrides it. The DCH CR,
 application ConfigMap, REST and Flight use this namespace; dc-controller stays in
 the platform applications namespace. Its HTTPRoute also stays there, authorized
 by per-Service ReferenceGrants in the infrastructure namespace.

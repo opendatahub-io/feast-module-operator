@@ -72,7 +72,7 @@ type DataConnectHubCapabilitySpec struct {
 	CapabilitySpec `json:",inline"`
 
 	// Namespace contains DCH services, not the controller. Defaults to
-	// odh-data-connect-hub-infra on ODH or rhoai-data-connect-hub-infra on RHOAI.
+	// odh-dch-infra on ODH or redhat-dch-infra on RHOAI.
 	// +kubebuilder:validation:Pattern="^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$"
 	// +kubebuilder:validation:MaxLength=63
 	// +optional
