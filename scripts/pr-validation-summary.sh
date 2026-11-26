@@ -80,4 +80,4 @@ if [ "$failed" = "true" ]; then
 fi
 
 echo "✅ All blocking validations passed."
-echo "⚠️ Operator e2e (rhoai) failed with the documented upstream signature: flag provided but not defined: -metrics-cert-path (non-blocking until opendatahub-io/feast#312 and the vendored manifest pin move)."
+echo "⚠️ Operator e2e (rhoai) failed with the documented upstream signature: flag provided but not defined: -metrics-cert-path (non-blocking until feast-dev/feast#7243 supersedes opendatahub-io/feast#312 and the vendored manifest pin moves)."

@@ -99,9 +99,22 @@ jobs:
           else
             # Capture the file list first: in a pipeline `grep -q` exits on the
             # first match, `git diff` then dies with SIGPIPE, and `!` turns that
-            # failure into "no relevant changes".
-            changed_files="$(git diff --no-renames --name-only "origin/${BASE_REF}...HEAD")" || exit 1
-            if grep -Eq "$RELEVANT" <<< "$changed_files"; then
+            # failure into "no relevant changes". `-z` preserves raw paths, so
+            # Git does not quote non-ASCII names and hide their extensions.
+            changed_files="$(mktemp)"
+            if ! git diff --no-renames --name-only -z "origin/${BASE_REF}...HEAD" > "$changed_files"; then
+              rm -f "$changed_files"
+              exit 1
+            fi
+            relevant=false
+            while IFS= read -r -d '' changed_file; do
+              if [[ "$changed_file" =~ $RELEVANT ]]; then
+                relevant=true
+                break
+              fi
+            done < "$changed_files"
+            rm -f "$changed_files"
+            if [ "$relevant" = "true" ]; then
               echo "skip=false" >> "$GITHUB_OUTPUT"
               echo "reason=relevant changes detected" >> "$GITHUB_OUTPUT"
             else
@@ -418,12 +431,14 @@ jobs:
   # The rhoai overlay passes `--metrics-cert-path` to the vendored pinned
   # quay.io/feastdev/feast-operator image, which does not define that flag, so
   # the operand crash-loops and this leg cannot pass until
-  # opendatahub-io/feast#312 lands and the vendored manifest pin moves.
+  # feast-dev/feast#7243 (which supersedes opendatahub-io/feast#312) lands and
+  # the vendored manifest pin moves.
   #
   # Keep this leg running and visibly failed, but non-blocking. The summary
   # reads the actual e2e step outcome, not needs.<job>.result: a job-level
   # continue-on-error makes that result look successful and was the source of
-  # a false-green summary. Delete continue-on-error once the pin includes #312.
+  # a false-green summary. Delete continue-on-error once the pin includes the
+  # feast-dev/feast#7243 fix.
   operator-e2e-rhoai:
     name: Operator e2e (rhoai, expected failure)
     runs-on: ubuntu-latest
@@ -504,7 +519,7 @@ jobs:
             echo "::error::RHOAI e2e failed without the documented upstream --metrics-cert-path signature (classification: ${classification}); the aggregate will fail."
             exit 1
           fi
-          echo "::warning::RHOAI e2e failed with the documented upstream --metrics-cert-path signature; non-blocking until opendatahub-io/feast#312 lands and the vendored pin moves."
+          echo "::warning::RHOAI e2e failed with the documented upstream --metrics-cert-path signature; non-blocking until feast-dev/feast#7243 supersedes opendatahub-io/feast#312 and the vendored pin moves."
 
       # Record the step outcome before the job-level continue-on-error hides
       # it from needs.<job>.result. If setup fails before this step, the value

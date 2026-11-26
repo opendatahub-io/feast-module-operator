@@ -57,11 +57,19 @@ operand deployment feast-operator-controller-manager
 flag provided but not defined: -metrics-cert-path
 EOF
 
+cat > "$tmp/suffix-flag.log" <<'EOF'
+=== e2e failure evidence ===
+failed leaf: TestFeastOperator/foundation/should become ready
+operand deployment feast-operator-controller-manager
+flag provided but not defined: -metrics-cert-path-extra
+EOF
+
 expect_classification upstream-signature expected-upstream-metrics-cert-path rhoai "$tmp/upstream-signature.log"
 expect_classification missing-sa unexpected rhoai "$tmp/missing-sa.log"
 expect_classification unrelated unexpected rhoai "$tmp/unrelated.log"
 expect_classification image-mismatch-with-flag unexpected rhoai "$tmp/image-mismatch-with-flag.log"
 expect_classification multiple-failed-leaves unexpected rhoai "$tmp/multiple-failed-leaves.log"
+expect_classification suffix-flag unexpected rhoai "$tmp/suffix-flag.log"
 expect_classification missing-evidence missing-evidence rhoai "$tmp/does-not-exist.log"
 expect_classification wrong-platform unexpected-platform odh "$tmp/upstream-signature.log"
 

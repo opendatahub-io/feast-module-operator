@@ -21,7 +21,33 @@ class ManifestContractTest(unittest.TestCase):
         with open(self.containerfile, "w", encoding="utf-8") as handle:
             handle.write("COPY config/manifests/ /manifests/\n")
 
-    def write_deployment(self, copier_command, manager_volume="manifests"):
+    def write_deployment(
+        self,
+        copier_command,
+        manager_volume="manifests",
+        *,
+        copier_args=None,
+        copier_mount=None,
+        manager_mount=None,
+        manager_env_value="/opt/manifests",
+    ):
+        copier = {
+            "name": "copy-manifests",
+            "volumeMounts": [
+                {
+                    "name": "manifests",
+                    "mountPath": "/opt/manifests",
+                    **(copier_mount or {}),
+                }
+            ],
+        }
+        if copier_command is not None:
+            copier["command"] = copier_command
+        if copier_args is not None:
+            copier["args"] = copier_args
+        manager_volume_mount = {"name": manager_volume, "mountPath": "/opt/manifests"}
+        manager_volume_mount.update(manager_mount or {})
+
         document = {
             "apiVersion": "apps/v1",
             "kind": "Deployment",
@@ -35,23 +61,13 @@ class ManifestContractTest(unittest.TestCase):
                                 "env": [
                                     {
                                         "name": "ODH_MODULE_OPERATOR_MANIFESTS_PATH",
-                                        "value": "/opt/manifests",
+                                        "value": manager_env_value,
                                     }
                                 ],
-                                "volumeMounts": [
-                                    {"name": manager_volume, "mountPath": "/opt/manifests"}
-                                ],
+                                "volumeMounts": [manager_volume_mount],
                             }
                         ],
-                        "initContainers": [
-                            {
-                                "name": "copy-manifests",
-                                "command": copier_command,
-                                "volumeMounts": [
-                                    {"name": "manifests", "mountPath": "/opt/manifests"}
-                                ],
-                            }
-                        ],
+                        "initContainers": [copier],
                         "volumes": [{"name": "manifests", "emptyDir": {}}],
                     }
                 }
@@ -89,8 +105,14 @@ class ManifestContractTest(unittest.TestCase):
 
         self.assertEqual(problems, [])
         self.assertEqual(image_dir, "/manifests")
-        self.assertEqual(deployments[0]["copier_mount"], ("manifests", "/opt/manifests"))
-        self.assertEqual(deployments[0]["manager_mount"], ("manifests", "/opt/manifests"))
+        self.assertEqual(
+            deployments[0]["copier_mount"],
+            ("manifests", "/opt/manifests", "", False, ""),
+        )
+        self.assertEqual(
+            deployments[0]["manager_mount"],
+            ("manifests", "/opt/manifests", "", False, ""),
+        )
 
     def test_init_and_manager_must_share_a_volume(self):
         chart = self.write_deployment(
@@ -100,9 +122,89 @@ class ManifestContractTest(unittest.TestCase):
         problems, _, _ = manifest_path_contract(self.containerfile, chart)
 
         self.assertTrue(
-            any("they must use the same volume and mount path" in problem for problem in problems),
+            any(
+                "they must use the same volume, mount path, and subPath" in problem
+                for problem in problems
+            ),
             problems,
         )
+
+    def test_init_command_is_required(self):
+        chart = self.write_deployment(
+            None,
+            copier_args=["cp", "-r", "/manifests/.", "/opt/manifests/"],
+        )
+        problems, _, _ = manifest_path_contract(self.containerfile, chart)
+
+        self.assertTrue(
+            any("no supported recursive" in problem for problem in problems),
+            problems,
+        )
+
+    def test_explicit_command_can_hold_operands_in_args(self):
+        chart = self.write_deployment(
+            ["cp"],
+            copier_args=["-r", "/manifests/.", "/opt/manifests/"],
+        )
+        problems, _, _ = manifest_path_contract(self.containerfile, chart)
+
+        self.assertEqual(problems, [])
+
+    def test_copier_mount_must_be_writable(self):
+        chart = self.write_deployment(
+            ["cp", "-r", "/manifests/.", "/opt/manifests/"],
+            copier_mount={"readOnly": True},
+        )
+        problems, _, _ = manifest_path_contract(self.containerfile, chart)
+
+        self.assertTrue(
+            any("read-only" in problem for problem in problems),
+            problems,
+        )
+
+    def test_copier_and_manager_must_share_subpath(self):
+        chart = self.write_deployment(
+            ["cp", "-r", "/manifests/.", "/opt/manifests/"],
+            copier_mount={"subPath": "writer"},
+            manager_mount={"subPath": "reader"},
+        )
+        problems, _, _ = manifest_path_contract(self.containerfile, chart)
+
+        self.assertTrue(
+            any("same volume, mount path, and subPath" in problem for problem in problems),
+            problems,
+        )
+
+    def test_manager_mount_may_be_read_only(self):
+        chart = self.write_deployment(
+            ["cp", "-r", "/manifests/.", "/opt/manifests/"],
+            manager_mount={"readOnly": True},
+        )
+        problems, _, _ = manifest_path_contract(self.containerfile, chart)
+
+        self.assertEqual(problems, [])
+
+    def test_subpath_expr_is_rejected(self):
+        chart = self.write_deployment(
+            ["cp", "-r", "/manifests/.", "/opt/manifests/"],
+            copier_mount={"subPathExpr": "$(POD_NAME)"},
+        )
+        problems, _, _ = manifest_path_contract(self.containerfile, chart)
+
+        self.assertTrue(
+            any("cannot be verified statically" in problem for problem in problems),
+            problems,
+        )
+
+    def test_manifest_path_trailing_slash_is_normalized(self):
+        chart = self.write_deployment(
+            ["cp", "-r", "/manifests/.", "/opt/manifests/"],
+            manager_env_value="/opt/manifests/",
+        )
+        problems, _, deployments = manifest_path_contract(self.containerfile, chart)
+
+        self.assertEqual(problems, [])
+        self.assertEqual(deployments[0]["env_value"], "/opt/manifests")
 
     def test_chart_records_mounts_for_contract(self):
         chart = self.write_deployment(["cp", "-r", "/manifests/.", "/opt/manifests/"])

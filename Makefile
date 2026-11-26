@@ -192,7 +192,7 @@ HELM_NAMESPACE ?= opendatahub-feast-system
 HELM_RELEASE   ?= opendatahub-feast-operator
 OPERATOR_NAMESPACE ?= $(HELM_NAMESPACE)
 RESOLVE_IMAGE_REF ?= 1
-E2E_EXPECTED_IMAGE ?= $(shell CONTAINER_TOOL="$(CONTAINER_TOOL)" bash ./hack/scripts/resolve-image-ref.sh "$(IMG)" 2>/dev/null)
+E2E_EXPECTED_IMAGE ?= $(if $(filter 1,$(RESOLVE_IMAGE_REF)),$(shell CONTAINER_TOOL="$(CONTAINER_TOOL)" bash ./hack/scripts/resolve-image-ref.sh "$(IMG)" 2>/dev/null),$(IMG))
 E2E_FAILURE_EVIDENCE ?=
 INTEGRATION_TEST_NAMESPACE ?= integration-test
 HELM_EXTRA_ARGS ?=

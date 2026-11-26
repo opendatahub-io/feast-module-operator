@@ -76,9 +76,11 @@ fi
 : > "$call_log"
 E2E_CLUSTER_CREATED=1
 E2E_REGISTRY_CREATED=1
+E2E_REGISTRY_CONTAINER_ID=owned-container-id
 e2e_teardown >/dev/null
 grep -Fq 'provider=podman args=delete cluster --name owned-cluster' "$call_log"
-grep -Fq 'container args=rm -f owned-registry' "$call_log"
+grep -Fq 'container args=rm -f owned-container-id' "$call_log"
+E2E_REGISTRY_CONTAINER_ID=
 
 : > "$call_log"
 E2E_KEEP_CLUSTER=1
@@ -88,6 +90,32 @@ if [ -s "$call_log" ]; then
   exit 1
 fi
 E2E_KEEP_CLUSTER=0
+
+mkdir -p "$tmp/konflux/.tekton"
+cat > "$tmp/konflux/.tekton/test-pull-request.yaml" <<'EOF'
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+spec:
+  params:
+    - name: dockerfile
+      value: "Containerfile operator"
+    - name: path-context
+      value: "."
+EOF
+target_output="$(
+  cd "$tmp/konflux"
+  CONTAINERFILE=
+  BUILD_CONTEXT=
+  KONFLUX_DOCKERFILE=
+  KONFLUX_PATH_CONTEXT=
+  KONFLUX_TARGET=
+  resolve_konflux_target
+  printf '%s|%s|%s\n' "$KONFLUX_DOCKERFILE" "$KONFLUX_PATH_CONTEXT" "$CONTAINERFILE"
+)"
+if [[ "$target_output" != 'Containerfile operator|.|Containerfile operator' ]]; then
+  printf 'spaced PipelineRun parameters were not preserved: %s\n' "$target_output" >&2
+  exit 1
+fi
 
 image_repo='localhost:5001/konflux-sim/feast-module-operator'
 image_ref="${image_repo}:e678dbb3dcd8"

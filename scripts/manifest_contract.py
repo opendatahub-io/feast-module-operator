@@ -166,13 +166,19 @@ def parse_manifest_copy(argv):
 
 
 def mount_for_path(container, path):
-    """Return (volume name, normalized mount path) for a container mount."""
+    """Return (volume, mount path, subPath, readOnly, subPathExpr) for a mount."""
     wanted = normalize_mount_path(path)
     for mount in container.get("volumeMounts") or []:
         name = mount.get("name")
         mount_path = mount.get("mountPath")
         if name and mount_path and normalize_mount_path(mount_path) == wanted:
-            return name, normalize_mount_path(mount_path)
+            return (
+                name,
+                normalize_mount_path(mount_path),
+                (mount.get("subPath") or "").strip("/"),
+                mount.get("readOnly") is True,
+                mount.get("subPathExpr") or "",
+            )
     return None
 
 
@@ -204,20 +210,24 @@ def chart_manifest_paths(path):
 
         if manager is None:
             continue
+        if env_value:
+            env_value = normalize_mount_path(env_value)
 
         source = destination = None
         copier_mount = manager_mount = None
         # Only the copy-manifests init container populates the volume. `cp`
         # must be the executable: `command: [echo]` with "cp" in args copies
-        # nothing even though it mentions every path.
+        # nothing even though it mentions every path. Require an explicit
+        # command because an `args`-only container runs the image entrypoint.
         init_containers = spec.get("initContainers") or []
         copier = next(
             (c for c in init_containers if c.get("name") == "copy-manifests"),
             init_containers[0] if init_containers else None,
         )
         if copier is not None:
-            argv = list(copier.get("command") or []) + list(copier.get("args") or [])
-            parsed = parse_manifest_copy(argv)
+            command = list(copier.get("command") or [])
+            argv = command + list(copier.get("args") or [])
+            parsed = parse_manifest_copy(argv) if command else None
             if parsed:
                 source, destination = parsed
                 copier_mount = mount_for_path(copier, destination)
@@ -271,13 +281,25 @@ def manifest_path_contract(containerfile, chart_deployment):
         if not deployment["manager_mount"]:
             problems.append(f"{where}: the manager container does not mount {env_value}")
             continue
-        if deployment["copier_mount"] != deployment["manager_mount"]:
-            copier_volume, copier_path = deployment["copier_mount"]
-            manager_volume, manager_path = deployment["manager_mount"]
+        copier_mount = deployment["copier_mount"]
+        manager_mount = deployment["manager_mount"]
+        if copier_mount[4] or manager_mount[4]:
             problems.append(
-                f"{where}: copy-manifests mounts {copier_volume} at {copier_path}, "
-                f"but manager mounts {manager_volume} at {manager_path}; "
-                "they must use the same volume and mount path"
+                f"{where}: subPathExpr in the manifest volume mounts cannot be verified statically"
+            )
+        if copier_mount[3]:
+            problems.append(
+                f"{where}: the copy-manifests init container mounts {destination} read-only"
+            )
+        if copier_mount[:3] != manager_mount[:3]:
+            copier_volume, copier_path, copier_sub_path = copier_mount[:3]
+            manager_volume, manager_path, manager_sub_path = manager_mount[:3]
+            problems.append(
+                f"{where}: copy-manifests mounts {copier_volume} at {copier_path} "
+                f"(subPath {copier_sub_path or '<root>'}), but manager mounts "
+                f"{manager_volume} at {manager_path} "
+                f"(subPath {manager_sub_path or '<root>'}); "
+                "they must use the same volume, mount path, and subPath"
             )
         if image_dir and source != image_dir:
             problems.append(

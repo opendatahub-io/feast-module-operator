@@ -180,15 +180,28 @@ resolve_konflux_target() {
   fi
   KONFLUX_TARGET="${files[0]}"
 
-  read -r KONFLUX_DOCKERFILE KONFLUX_PATH_CONTEXT < <(python3 - "$KONFLUX_TARGET" <<'PY'
+  local target_params
+  target_params="$(mktemp -d)"
+  if ! python3 - "$KONFLUX_TARGET" "$target_params/dockerfile" "$target_params/path-context" <<'PY'
 import sys, yaml
 doc = yaml.safe_load(open(sys.argv[1]))
 params = {p.get("name"): p.get("value") for p in (doc.get("spec") or {}).get("params") or []}
-print(params.get("dockerfile", "-"), params.get("path-context", "-"))
+for key, path in (("dockerfile", sys.argv[2]), ("path-context", sys.argv[3])):
+    value = params.get(key)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(str(value) if value else "-")
 PY
-)
+  then
+    rm -rf "$target_params"
+    err "could not read dockerfile and path-context from $KONFLUX_TARGET"
+    exit 1
+  fi
+  KONFLUX_DOCKERFILE="$(<"$target_params/dockerfile")"
+  KONFLUX_PATH_CONTEXT="$(<"$target_params/path-context")"
+  rm -rf "$target_params"
 
-  if [ "$KONFLUX_DOCKERFILE" = "-" ] || [ "$KONFLUX_PATH_CONTEXT" = "-" ]; then
+  if [ -z "$KONFLUX_DOCKERFILE" ] || [ -z "$KONFLUX_PATH_CONTEXT" ] ||
+     [ "$KONFLUX_DOCKERFILE" = "-" ] || [ "$KONFLUX_PATH_CONTEXT" = "-" ]; then
     err "$KONFLUX_TARGET is missing a dockerfile or path-context param"
     exit 1
   fi
@@ -234,7 +247,7 @@ builder_go_version() {
     }' "$CONTAINERFILE")"
   if [ -z "$version" ]; then
     err "$CONTAINERFILE has no golang builder image; cannot read the pinned Go version"
-    exit 1
+    return 1
   fi
   printf '%s\n' "$version"
 }
@@ -384,7 +397,11 @@ chart_drift_files() {
   local committed="${1%/}" generated="${2%/}" report="$3"
   local rel
 
-  diff -r "$committed" "$generated" > "$report" 2>&1 || true
+  local diff_rc=0
+  diff -r "$committed" "$generated" > "$report" 2>&1 || diff_rc=$?
+  if [ "$diff_rc" -gt 1 ]; then
+    return "$diff_rc"
+  fi
 
   # Compare content directly. A checksum manifest made the result depend on
   # sha256sum being installed (xargs exits 127 without it, both manifests come
@@ -427,7 +444,10 @@ run_chart_drift() {
   fi
 
   local head_drift
-  head_drift="$(chart_drift_files "$CHART_DIR" "$tmp/head/$CHART_DIR" "$tmp/head.diff")"
+  if ! head_drift="$(chart_drift_files "$CHART_DIR" "$tmp/head/$CHART_DIR" "$tmp/head.diff")"; then
+    err "could not compare $CHART_DIR with the generated chart"
+    return 1
+  fi
 
   if [ -z "$head_drift" ]; then
     pass "config/chart matches the generated output"
@@ -460,10 +480,16 @@ run_chart_drift() {
   fi
 
   local base_drift
-  base_drift="$(chart_drift_files "$tmp/base-committed" "$tmp/base/$CHART_DIR" "$tmp/base.diff")"
+  if ! base_drift="$(chart_drift_files "$tmp/base-committed" "$tmp/base/$CHART_DIR" "$tmp/base.diff")"; then
+    err "could not compare the committed $CHART_DIR on $base_ref with the generated chart"
+    return 1
+  fi
 
   local added_drift
-  added_drift="$(LC_ALL=C comm -23 <(printf '%s\n' "$head_drift") <(printf '%s\n' "$base_drift"))"
+  if ! added_drift="$(LC_ALL=C comm -23 <(printf '%s\n' "$head_drift") <(printf '%s\n' "$base_drift"))"; then
+    err "could not compare the HEAD and $base_ref drift sets"
+    return 1
+  fi
 
   if [ -z "$added_drift" ]; then
     warn "config/chart already does not match 'make helm' output on $base_ref; this PR adds no drift:"
@@ -706,6 +732,7 @@ validate_image() {
 
 E2E_CLUSTER_NAME="${E2E_CLUSTER_NAME:-}"
 E2E_REGISTRY_NAME="${E2E_REGISTRY_NAME:-}"
+E2E_REGISTRY_CONTAINER_ID="${E2E_REGISTRY_CONTAINER_ID:-}"
 E2E_REGISTRY_PORT="${E2E_REGISTRY_PORT:-5001}"
 # Pinned by digest: this container runs with container-engine access on the
 # runner, and it is the one unpinned artifact left in the e2e path next to a
@@ -729,7 +756,7 @@ e2e_teardown() {
     kind_cmd delete cluster --name "$E2E_CLUSTER_NAME" >/dev/null 2>&1 || true
   fi
   if [ "${E2E_REGISTRY_CREATED:-0}" = "1" ]; then
-    "$CONTAINER_TOOL" rm -f "$E2E_REGISTRY_NAME" >/dev/null 2>&1 || true
+    "$CONTAINER_TOOL" rm -f "${E2E_REGISTRY_CONTAINER_ID:-$E2E_REGISTRY_NAME}" >/dev/null 2>&1 || true
   fi
 }
 
@@ -791,21 +818,35 @@ validate_e2e() {
   export KUBECONFIG="$E2E_TMP_DIR/kubeconfig"
   E2E_CLUSTER_CREATED=0
   E2E_REGISTRY_CREATED=0
+  E2E_REGISTRY_CONTAINER_ID=""
 
   trap 'e2e_teardown; rm -rf "${E2E_TMP_DIR:-}"' EXIT
   trap 'exit 130' INT TERM
 
+  local build_image
+  build_image="${IMAGE}-${run_id}"
   info "Building the Konflux container image with ${CONTAINER_TOOL}..."
-  "$CONTAINER_TOOL" build --platform "$PLATFORM" -f "$CONTAINERFILE" -t "$IMAGE" "$BUILD_CONTEXT"
+  "$CONTAINER_TOOL" build --platform "$PLATFORM" -f "$CONTAINERFILE" -t "$build_image" "$BUILD_CONTEXT"
 
-  info "Starting the local registry on 127.0.0.1:${E2E_REGISTRY_PORT}..."
+  info "Creating the local registry on 127.0.0.1:${E2E_REGISTRY_PORT}..."
   if "$CONTAINER_TOOL" inspect "$E2E_REGISTRY_NAME" >/dev/null 2>&1; then
     err "registry container ${E2E_REGISTRY_NAME} already exists; choose a unique E2E_REGISTRY_NAME"
     return 1
   fi
-  "$CONTAINER_TOOL" run -d --name "$E2E_REGISTRY_NAME" \
-    -p "127.0.0.1:${E2E_REGISTRY_PORT}:5000" "$E2E_REGISTRY_IMAGE" >/dev/null
+  if ! E2E_REGISTRY_CONTAINER_ID="$("$CONTAINER_TOOL" create --name "$E2E_REGISTRY_NAME" \
+    -p "127.0.0.1:${E2E_REGISTRY_PORT}:5000" "$E2E_REGISTRY_IMAGE")"; then
+    err "could not create registry container ${E2E_REGISTRY_NAME}"
+    return 1
+  fi
+  if [ -z "$E2E_REGISTRY_CONTAINER_ID" ]; then
+    err "registry container create returned no container ID"
+    return 1
+  fi
   E2E_REGISTRY_CREATED=1
+  if ! "$CONTAINER_TOOL" start "$E2E_REGISTRY_CONTAINER_ID" >/dev/null; then
+    err "could not start registry container ${E2E_REGISTRY_NAME} on 127.0.0.1:${E2E_REGISTRY_PORT}"
+    return 1
+  fi
 
   local kind_config
   kind_config="$E2E_TMP_DIR/kind.yaml"
@@ -838,13 +879,22 @@ YAML
   # `localhost` inside a node is not the host's localhost, so alias it to the
   # registry container, which the node reaches by name over the kind network.
   "$CONTAINER_TOOL" network connect kind "$E2E_REGISTRY_NAME" >/dev/null 2>&1 || true
-  local node registry_dir
+  local node nodes registry_dir
   registry_dir="/etc/containerd/certs.d/localhost:${E2E_REGISTRY_PORT}"
-  for node in $(kind_cmd get nodes --name "$E2E_CLUSTER_NAME"); do
+  if ! nodes="$(kind_cmd get nodes --name "$E2E_CLUSTER_NAME")"; then
+    err "could not list nodes for Kind cluster ${E2E_CLUSTER_NAME}"
+    return 1
+  fi
+  if [ -z "$nodes" ]; then
+    err "Kind cluster ${E2E_CLUSTER_NAME} returned no nodes"
+    return 1
+  fi
+  while IFS= read -r node; do
+    [ -n "$node" ] || continue
     "$CONTAINER_TOOL" exec "$node" mkdir -p "$registry_dir"
     printf '[host."http://%s:5000"]\n' "$E2E_REGISTRY_NAME" \
       | "$CONTAINER_TOOL" exec -i "$node" cp /dev/stdin "${registry_dir}/hosts.toml"
-  done
+  done <<< "$nodes"
 
   # The controller registers an owner watch on monitoring.coreos.com
   # ServiceMonitors unconditionally, so the manager cannot start without that
@@ -880,7 +930,7 @@ YAML
   local image_repo image_ref
   image_repo="localhost:${E2E_REGISTRY_PORT}/konflux-sim/feast-module-operator"
   image_ref="${image_repo}:$(git rev-parse --short=12 HEAD)"
-  "$CONTAINER_TOOL" tag "$IMAGE" "$image_ref"
+  "$CONTAINER_TOOL" tag "$build_image" "$image_ref"
   "$CONTAINER_TOOL" push "$image_ref" >/dev/null
   pass "the PR image is pullable at ${image_ref}"
 
@@ -938,8 +988,9 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     builder-go) builder_go_version ;;
     target)
       resolve_konflux_target
+      builder_go="$(builder_go_version)" || exit 1
       printf 'dockerfile=%s\ncontext=%s\nbuilder_go=%s\n' \
-        "$CONTAINERFILE" "$BUILD_CONTEXT" "$(builder_go_version)"
+        "$CONTAINERFILE" "$BUILD_CONTEXT" "$builder_go"
       ;;
     all)       validate_static; validate_hermetic; validate_manifests; validate_chart; validate_image ;;
     *)

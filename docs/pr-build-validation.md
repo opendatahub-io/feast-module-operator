@@ -104,8 +104,10 @@ resources created by that run, and `CONTAINER_TOOL` also selects Kind's
 container provider.
 
 The `rhoai` exception remains until
-[opendatahub-io/feast#312](https://github.com/opendatahub-io/feast/pull/312)
-lands and the vendored manifest pin moves. The overlay currently passes
+[feast-dev/feast#7243](https://github.com/feast-dev/feast/pull/7243) lands and
+the vendored manifest pin moves. That upstream change supersedes
+[opendatahub-io/feast#312](https://github.com/opendatahub-io/feast/pull/312).
+The overlay currently passes
 `--metrics-cert-path` to a pinned `quay.io/feastdev/feast-operator` image that
 does not define the flag. Once the pin moves, remove the expected-failure
 handling and make that job blocking and hard-green.
