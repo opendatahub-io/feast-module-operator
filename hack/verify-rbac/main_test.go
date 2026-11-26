@@ -17,11 +17,20 @@ func TestDCHPermissionsInSourceAndChart(t *testing.T) {
 	require.NoError(t, err)
 	controller, err := loadClusterRole(filepath.Join(root, "config", "manifests", "dataconnecthub", "rbac", "role.yaml"))
 	require.NoError(t, err)
-	for _, role := range []*rbacv1.ClusterRole{module, chart, controller} {
+	for name, role := range map[string]*rbacv1.ClusterRole{"source": module, "chart": chart, "controller bundle": controller} {
+		t.Run(name, func(t *testing.T) {
+			granted := extractPermissions(role)
+			for _, verb := range []string{"create", "delete"} {
+				require.True(t, permissionCovered(granted, permission{
+					APIGroup: "dataconnecthub.opendatahub.io", Resource: "initdataconnectiontypes", Verb: verb,
+				}), "DCH initialization and uninstall permissions must be present in source, chart and controller bundle: %s", verb)
+			}
+		})
+	}
+	// Keep the existing module's named-bind regression separate from the
+	// controller's requirements; upstream DCH removed its explicit bind grants.
+	for _, role := range []*rbacv1.ClusterRole{module, chart} {
 		granted := extractPermissions(role)
-		require.True(t, permissionCovered(granted, permission{
-			APIGroup: "dataconnecthub.opendatahub.io", Resource: "initdataconnectiontypes", Verb: "create",
-		}), "controller initialization permissions must be grantable through the module chart")
 		for _, name := range []string{"dch-flight-service-secret-access", "dch-read", "dch-read-write", "dch-rest-service-secret-access"} {
 			require.True(t, permissionCovered(granted, permission{
 				APIGroup: "rbac.authorization.k8s.io", Resource: "clusterroles", Verb: "bind", ResourceName: name,
