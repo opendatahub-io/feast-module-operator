@@ -85,7 +85,7 @@ jobs:
           # how the suite stops being run without anyone noticing.
           # `.*\.go$` catches Go outside the listed directories (tools/, for
           # example); the hermetic preflight builds ./... and would see it.
-          RELEVANT='^(api/|cmd/|internal/|pkg/|config/|hack/|test/e2e/|test/support/|Containerfile|Makefile|go\.(mod|sum)|\.dockerignore|\.tekton/|scripts/(validate-build(_test)?\.sh|pr-validation-summary(_test)?\.sh|classify-e2e-failure(_test)?\.sh|manifest_contract(_test)?\.py|requirements-validation\.txt)|\.github/workflows/pr-build-validation\.yml|.*\.go$)'
+          RELEVANT='^(api/|cmd/|internal/|pkg/|config/|hack/|test/e2e/|test/support/|Containerfile|Makefile|go\.(mod|sum)|\.dockerignore|\.tekton/|scripts/(validate-build(_test)?\.sh|pr-validation-summary(_test)?\.sh|manifest_contract(_test)?\.py|requirements-validation\.txt)|\.github/workflows/pr-build-validation\.yml|.*\.go$)'
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -165,7 +165,6 @@ jobs:
           set -euo pipefail
           ./scripts/validate-build_test.sh
           ./scripts/pr-validation-summary_test.sh
-          ./scripts/classify-e2e-failure_test.sh
           python3 scripts/manifest_contract_test.py
 
   hermetic-preflight:
@@ -428,113 +427,6 @@ jobs:
           set -euo pipefail
           ./scripts/validate-build.sh e2e
 
-  # The rhoai overlay passes `--metrics-cert-path` to the vendored pinned
-  # quay.io/feastdev/feast-operator image, which does not define that flag, so
-  # the operand crash-loops and this leg cannot pass until
-  # feast-dev/feast#7243 (which supersedes opendatahub-io/feast#312) lands and
-  # the vendored manifest pin moves.
-  #
-  # Keep this leg running and visibly failed, but non-blocking. The summary
-  # reads the actual e2e step outcome, not needs.<job>.result: a job-level
-  # continue-on-error makes that result look successful and was the source of
-  # a false-green summary. Delete continue-on-error once the pin includes the
-  # feast-dev/feast#7243 fix.
-  operator-e2e-rhoai:
-    name: Operator e2e (rhoai, expected failure)
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    needs: check-skip
-    if: needs.check-skip.outputs.should-skip != 'true'
-    continue-on-error: true
-    outputs:
-      e2e_outcome: ${{ steps.record_outcome.outputs.e2e_outcome }}
-      e2e_classification: ${{ steps.record_outcome.outputs.e2e_classification }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Free disk space
-        run: |
-          set -euo pipefail
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
-
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: false
-
-      - name: Install Helm
-        env:
-          SIM_HELM_VERSION: ${{ env.SIM_HELM_VERSION }}
-        run: |
-          set -euo pipefail
-          curl -fsSL -o /tmp/helm.tar.gz \
-            "https://get.helm.sh/helm-v${SIM_HELM_VERSION}-linux-amd64.tar.gz"
-          printf '%s  %s\n' "$SIM_HELM_SHA256" /tmp/helm.tar.gz | sha256sum --check --strict
-          tar -xzf /tmp/helm.tar.gz -C /tmp
-          sudo install -m 0755 "/tmp/linux-amd64/helm" /usr/local/bin/helm
-          helm version --short
-
-      - name: Install kind
-        env:
-          SIM_KIND_VERSION: ${{ env.SIM_KIND_VERSION }}
-        run: |
-          set -euo pipefail
-          curl -fsSL -o /tmp/kind \
-            "https://github.com/kubernetes-sigs/kind/releases/download/v${SIM_KIND_VERSION}/kind-linux-amd64"
-          printf '%s  %s\n' "$SIM_KIND_SHA256" /tmp/kind | sha256sum --check --strict
-          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
-          kind version
-
-      - name: Run the operator e2e against the PR image
-        id: e2e
-        env:
-          GOTOOLCHAIN: local
-          E2E_PLATFORMS: rhoai
-          HELM_BIN: /usr/local/bin/helm
-          # The suite writes current/previous operand logs before its cleanup
-          # deletes the FeastOperator CR. Post-test diagnostics cannot prove the
-          # cause because owner-reference GC removes the operand SA first.
-          E2E_FAILURE_EVIDENCE: ${{ runner.temp }}/rhoai-e2e-evidence.log
-        run: |
-          set -euo pipefail
-          ./scripts/validate-build.sh e2e
-
-      - name: Classify the expected RHOAI failure
-        id: classify_failure
-        if: always() && steps.e2e.outcome == 'failure'
-        env:
-          E2E_EVIDENCE: ${{ runner.temp }}/rhoai-e2e-evidence.log
-        run: |
-          set -euo pipefail
-          classification="$(./scripts/classify-e2e-failure.sh rhoai "$E2E_EVIDENCE")"
-          echo "classification=${classification}" >> "$GITHUB_OUTPUT"
-          if [ "$classification" != "expected-upstream-metrics-cert-path" ]; then
-            echo "::error::RHOAI e2e failed without the documented upstream --metrics-cert-path signature (classification: ${classification}); the aggregate will fail."
-            exit 1
-          fi
-          echo "::warning::RHOAI e2e failed with the documented upstream --metrics-cert-path signature; non-blocking until feast-dev/feast#7243 supersedes opendatahub-io/feast#312 and the vendored pin moves."
-
-      # Record the step outcome before the job-level continue-on-error hides
-      # it from needs.<job>.result. If setup fails before this step, the value
-      # is skipped/not-run and the summary fails instead of calling it expected.
-      - name: Record the E2E step outcome
-        id: record_outcome
-        if: always()
-        env:
-          E2E_OUTCOME: ${{ steps.e2e.outcome }}
-          E2E_CLASSIFICATION: ${{ steps.classify_failure.outputs.classification }}
-        run: |
-          set -euo pipefail
-          echo "e2e_outcome=${E2E_OUTCOME:-not-run}" >> "$GITHUB_OUTPUT"
-          echo "e2e_classification=${E2E_CLASSIFICATION:-missing-evidence}" >> "$GITHUB_OUTPUT"
-
   summary:
     name: Build Validation Summary
     runs-on: ubuntu-latest
@@ -549,7 +441,6 @@ jobs:
       - chart-validation
       - image-validation
       - operator-e2e-odh
-      - operator-e2e-rhoai
     if: always()
     steps:
       - name: Checkout code
@@ -568,8 +459,6 @@ jobs:
           CHART: ${{ needs.chart-validation.result }}
           IMAGE: ${{ needs.image-validation.result }}
           E2E_ODH: ${{ needs.operator-e2e-odh.result }}
-          E2E_RHOAI_OUTCOME: ${{ needs.operator-e2e-rhoai.outputs.e2e_outcome }}
-          E2E_RHOAI_CLASSIFICATION: ${{ needs.operator-e2e-rhoai.outputs.e2e_classification }}
         run: |
           set -euo pipefail
           ./scripts/pr-validation-summary.sh

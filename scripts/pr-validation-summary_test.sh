@@ -40,37 +40,17 @@ expect_failure() {
   echo "ok - $name"
 }
 
-run_summary expected-rhoai-failure \
-  E2E_RHOAI_OUTCOME=failure \
-  E2E_RHOAI_CLASSIFICATION=expected-upstream-metrics-cert-path
-grep -Fq "All blocking validations passed." "$tmp/expected-rhoai-failure.out"
-grep -Fq "Operator e2e (rhoai) | failure (expected upstream --metrics-cert-path signature; non-blocking)" "$tmp/expected-rhoai-failure.out"
-grep -Fq "flag provided but not defined: -metrics-cert-path" "$tmp/expected-rhoai-failure.out"
-if grep -Fq "All validations passed." "$tmp/expected-rhoai-failure.out"; then
-  echo "not ok - summary claimed all validations passed" >&2
-  exit 1
-fi
+run_summary all-pass
+grep -Fq "All blocking validations passed." "$tmp/all-pass.out"
 
-expect_failure odh-failure \
-  E2E_ODH=failure \
-  E2E_RHOAI_OUTCOME=failure \
-  E2E_RHOAI_CLASSIFICATION=expected-upstream-metrics-cert-path
-if grep -Fq "without the documented upstream signature" "$tmp/odh-failure.out"; then
-  echo "not ok - accepted rhoai classification was reported as a signature mismatch during an odh failure" >&2
-  exit 1
-fi
-expect_failure rhoai-unexpected-success \
-  E2E_RHOAI_OUTCOME=success \
-  E2E_RHOAI_CLASSIFICATION=expected-upstream-metrics-cert-path
-grep -Fq "unexpectedly passed" "$tmp/rhoai-unexpected-success.out"
-expect_failure rhoai-not-run E2E_RHOAI_OUTCOME=not-run
-expect_failure rhoai-skipped E2E_RHOAI_OUTCOME=skipped
-expect_failure rhoai-missing-classification E2E_RHOAI_OUTCOME=failure
-grep -Fq "classification: missing-evidence" "$tmp/rhoai-missing-classification.out"
-expect_failure rhoai-missing-sa E2E_RHOAI_OUTCOME=failure E2E_RHOAI_CLASSIFICATION=unexpected
-grep -Fq "classification: unexpected" "$tmp/rhoai-missing-sa.out"
-expect_failure rhoai-unexpected-classification \
-  E2E_RHOAI_OUTCOME=failure \
-  E2E_RHOAI_CLASSIFICATION=unexpected-platform
+expect_failure odh-failure E2E_ODH=failure
+grep -Fq "Operator e2e (odh) | failure" "$tmp/odh-failure.out"
+
+expect_failure static-failure STATIC=failure
+
+run_summary skipped SKIP=true REASON="documentation only"
+grep -Fq "Validation not required: documentation only" "$tmp/skipped.out"
+
+expect_failure skip-check-failure CHECK_SKIP=failure
 
 echo "pr-validation summary tests passed"
