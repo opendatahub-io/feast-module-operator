@@ -68,18 +68,19 @@ be regenerated and committed before the check passes.
 
 ## Operator e2e
 
-The `operator-e2e-odh` job is the only CI check that runs the operator. It
-builds the image this pull request produces, deploys it to a throwaway Kind
-cluster with the `odh` overlay, applies a `FeatureStore` and runs the
-repository's own suite against it, so a container-level break that leaves every
-static check green still fails here. The suite also reads the live operator
-Deployment's `.spec.template.spec.containers` entry and requires the `manager`
-image to equal the exact image the setup pushed. Readiness alone is not enough
-to prove the PR image was exercised.
+The `operator-e2e-odh` and `operator-e2e-rhoai` jobs are the only CI checks
+that run the operator. Each builds the image this pull request produces,
+deploys it to a throwaway Kind cluster with its platform overlay, applies a
+`FeatureStore` and runs the repository's own suite against it, so a
+container-level break that leaves every static check green still fails here.
+The suite also reads the live operator Deployment's
+`.spec.template.spec.containers` entry and requires the `manager` image to
+equal the exact image the setup pushed. Readiness alone is not enough to prove
+the PR image was exercised.
 
 `ODH_PLATFORM_TYPE` selects the overlay, so `scripts/validate-build.sh e2e`
-runs `odh` by default. Set `E2E_PLATFORMS=rhoai` to run the RHOAI overlay
-locally while that coverage is being developed.
+runs both `odh` and `rhoai` by default. Set `E2E_PLATFORMS=odh` or
+`E2E_PLATFORMS=rhoai` to select one locally.
 
 When `E2E_FAILURE_EVIDENCE` is set, the suite writes the failed leaf, current
 and previous operand pod logs, and the operand Deployment spec there before its
@@ -93,13 +94,19 @@ Kind and registry names are unique per run by default. Teardown deletes only
 resources created by that run, and `CONTAINER_TOOL` also selects Kind's
 container provider.
 
-RHOAI e2e is deferred rather than kept as a permanently red, non-blocking job.
-The RHOAI overlay currently passes `--metrics-cert-path` to a pinned
-`quay.io/feastdev/feast-operator` image that does not define the flag, so the
-operand crash-loops. [feast-dev/feast#7243](https://github.com/feast-dev/feast/pull/7243)
-supersedes [opendatahub-io/feast#312](https://github.com/opendatahub-io/feast/pull/312)
-and fixes that upstream. Once it lands and the vendored manifest pin moves, add
-a blocking `operator-e2e-rhoai` job.
+RHOAI e2e is blocking. The bundled RHOAI overlay currently passes
+`--metrics-cert-path` to the pinned `quay.io/feastdev/feast-operator:0.68.0`
+image, which does not define the flag, so the operand crash-loops.
+[opendatahub-io/feast#312](https://github.com/opendatahub-io/feast/pull/312)
+changes the overlay to use a downstream operator build that supports the flag.
+Once that PR merges and this repository moves its vendored manifest pin, the
+RHOAI job should pass.
+
+The durable upstream fix is
+[feast-dev/feast#7243](https://github.com/feast-dev/feast/pull/7243), which
+adds the metrics certificate flags to `feast-operator`. Once a Feast release
+contains that change and the release-managed operator image moves, the
+midstream digest pin can be removed.
 
 ## Why the RBAC subject check exists
 

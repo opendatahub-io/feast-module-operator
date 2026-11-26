@@ -10,6 +10,7 @@ manifests="${MANIFESTS:-}"
 chart="${CHART:-}"
 image="${IMAGE:-}"
 e2e_odh="${E2E_ODH:-}"
+e2e_rhoai="${E2E_RHOAI:-}"
 
 echo "## Konflux Build Simulation Results"
 echo ""
@@ -34,9 +35,10 @@ echo "| Manifests | ${manifests:-missing} |"
 echo "| Helm chart | ${chart:-missing} |"
 echo "| Container image | ${image:-missing} |"
 echo "| Operator e2e (odh) | ${e2e_odh:-missing} |"
+echo "| Operator e2e (rhoai) | ${e2e_rhoai:-missing} |"
 echo ""
 
-for result in "$static" "$hermetic" "$manifests" "$chart" "$image" "$e2e_odh"; do
+for result in "$static" "$hermetic" "$manifests" "$chart" "$image" "$e2e_odh" "$e2e_rhoai"; do
   if [ "$result" != "success" ]; then
     failed=true
   fi

@@ -36,7 +36,7 @@ set -euo pipefail
 #                        drift fails, which is the safe default.
 #   SKIP_CHART_DRIFT=1   Skip the regenerate-and-compare step
 #   SKIP_IMAGE=1         Skip the image build
-#   E2E_PLATFORMS        Platform types the e2e mode deploys (default "odh")
+#   E2E_PLATFORMS        Platform types the e2e mode deploys (default "odh rhoai")
 #   E2E_EXPECTED_IMAGE   Image reference the live operator Deployment must run
 #   E2E_FAILURE_EVIDENCE Optional file where the e2e suite writes operand logs
 #                        before its cleanup deletes the FeastOperator CR
@@ -738,7 +738,7 @@ E2E_REGISTRY_PORT="${E2E_REGISTRY_PORT:-5001}"
 # runner, and it is the one unpinned artifact left in the e2e path next to a
 # CRD bundle that is already checksum-pinned. Bump it by reviewed change.
 E2E_REGISTRY_IMAGE="${E2E_REGISTRY_IMAGE:-registry:3@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c}"
-E2E_PLATFORMS="${E2E_PLATFORMS:-odh}"
+E2E_PLATFORMS="${E2E_PLATFORMS:-odh rhoai}"
 E2E_NAMESPACE="${E2E_NAMESPACE:-opendatahub-feast-system}"
 E2E_SERVICEMONITOR_CRDS="${E2E_SERVICEMONITOR_CRDS:-https://github.com/prometheus-operator/prometheus-operator/releases/download/v0.80.1/stripped-down-crds.yaml}"
 E2E_SERVICEMONITOR_CRDS_SHA256="${E2E_SERVICEMONITOR_CRDS_SHA256:-2948db44666044f0f5639649dc21b13bd403545562797c3a4d9bd76efab9e8dd}"

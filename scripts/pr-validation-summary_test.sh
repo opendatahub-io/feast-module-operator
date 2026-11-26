@@ -15,6 +15,7 @@ base_env=(
   CHART=success
   IMAGE=success
   E2E_ODH=success
+  E2E_RHOAI=success
 )
 
 run_summary() {
@@ -45,6 +46,9 @@ grep -Fq "All blocking validations passed." "$tmp/all-pass.out"
 
 expect_failure odh-failure E2E_ODH=failure
 grep -Fq "Operator e2e (odh) | failure" "$tmp/odh-failure.out"
+
+expect_failure rhoai-failure E2E_RHOAI=failure
+grep -Fq "Operator e2e (rhoai) | failure" "$tmp/rhoai-failure.out"
 
 expect_failure static-failure STATIC=failure
 

@@ -427,6 +427,70 @@ jobs:
           set -euo pipefail
           ./scripts/validate-build.sh e2e
 
+  # The rhoai overlay passes --metrics-cert-path to the pinned upstream
+  # quay.io/feastdev/feast-operator image, which does not define that flag.
+  # This is a normal blocking check. It turns green once the overlay fix in
+  # opendatahub-io/feast#312 is merged and the vendored manifest pin moves.
+  operator-e2e-rhoai:
+    name: Operator e2e (rhoai)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    needs: check-skip
+    if: needs.check-skip.outputs.should-skip != 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Install Helm
+        env:
+          SIM_HELM_VERSION: ${{ env.SIM_HELM_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/helm.tar.gz \
+            "https://get.helm.sh/helm-v${SIM_HELM_VERSION}-linux-amd64.tar.gz"
+          printf '%s  %s\n' "$SIM_HELM_SHA256" /tmp/helm.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/helm.tar.gz -C /tmp
+          sudo install -m 0755 "/tmp/linux-amd64/helm" /usr/local/bin/helm
+          helm version --short
+
+      - name: Install kind
+        env:
+          SIM_KIND_VERSION: ${{ env.SIM_KIND_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/kind \
+            "https://github.com/kubernetes-sigs/kind/releases/download/v${SIM_KIND_VERSION}/kind-linux-amd64"
+          printf '%s  %s\n' "$SIM_KIND_SHA256" /tmp/kind | sha256sum --check --strict
+          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
+          kind version
+
+      - name: Run the operator e2e against the PR image
+        id: e2e
+        env:
+          GOTOOLCHAIN: local
+          E2E_PLATFORMS: rhoai
+          HELM_BIN: /usr/local/bin/helm
+          E2E_FAILURE_EVIDENCE: ${{ runner.temp }}/rhoai-e2e-evidence.log
+        run: |
+          set -euo pipefail
+          ./scripts/validate-build.sh e2e
+
   summary:
     name: Build Validation Summary
     runs-on: ubuntu-latest
@@ -441,6 +505,7 @@ jobs:
       - chart-validation
       - image-validation
       - operator-e2e-odh
+      - operator-e2e-rhoai
     if: always()
     steps:
       - name: Checkout code
@@ -459,6 +524,7 @@ jobs:
           CHART: ${{ needs.chart-validation.result }}
           IMAGE: ${{ needs.image-validation.result }}
           E2E_ODH: ${{ needs.operator-e2e-odh.result }}
+          E2E_RHOAI: ${{ needs.operator-e2e-rhoai.result }}
         run: |
           set -euo pipefail
           ./scripts/pr-validation-summary.sh
