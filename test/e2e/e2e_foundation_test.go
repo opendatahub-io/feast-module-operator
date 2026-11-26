@@ -84,6 +84,11 @@ func (ft *foundationTests) Execute(t *testing.T) {
 	t.Run("should expose a reachable operand Service", ft.testOperandServiceReachable)
 	t.Run("should reflect spec changes in operands", ft.testSpecProjectedToOperand)
 	t.Run("should report not ready when a critical operand fails", ft.testReadyFalseOnOperandFailure)
+	// Kind-only assertions run while the singleton and operands are still
+	// live, before the teardown coverage deletes them.
+	t.Run("kind: should deploy the module without manifest copying", ft.kindSubtest(ft.testKindModuleDeploymentShape))
+	t.Run("kind: should project the expected Feast image into the operand", ft.kindSubtest(ft.testKindImageSubstitution))
+	t.Run("kind: should retain replacements after a module restart", ft.kindSubtest(ft.testKindModuleRestartRetainsState))
 	t.Run("should remove operands when the module CR is deleted", ft.testCleanupRemovesOperands)
 }
 
@@ -97,6 +102,13 @@ func (ft *foundationTests) testModuleCRDInstalled(t *testing.T) {
 
 func (ft *foundationTests) testOperatorConfigMap(t *testing.T) {
 	g := NewWithT(t)
+
+	// Kind mode: recover the platformVersion fixture state a failed run
+	// left behind (fail closed on unknown ownership), so the fresh-chart
+	// assertion below observes a clean key.
+	if kindChecksEnabled() {
+		ft.recoverPlatformVersionFixture(t)
+	}
 
 	// The chart deploys the operator config ConfigMap under the well-known
 	// platform name (odh-data-config) so the platform operator can merge
@@ -213,11 +225,15 @@ func (ft *foundationTests) testReleaseStatus(t *testing.T) {
 	// A live OpenShift AI cluster already publishes platformVersion through
 	// the Platform that owns odh-data-config, and that owner reverts a
 	// client update. A chart-only install has no such owner, so emulate the
-	// platform handshake with a fixed version.
+	// platform handshake with a fixed version. Kind mode records the key's
+	// prior state and restores it (or preserves it after a failure) through
+	// the fixture lifecycle in kind_test.go.
 	expectedVersion := e2ePlatformVersion
 	if configMapOwnedByPlatform(platformCM) {
 		expectedVersion = platformCM.Data[feastoperatorcontroller.PlatformVersionKey]
 		g.Expect(expectedVersion).NotTo(BeEmpty(), "platform-owned ConfigMap should publish platformVersion")
+	} else if kindChecksEnabled() {
+		ft.recordPlatformVersionFixture(t, platformCM)
 	} else {
 		if platformCM.Data == nil {
 			platformCM.Data = map[string]string{}
@@ -226,10 +242,16 @@ func (ft *foundationTests) testReleaseStatus(t *testing.T) {
 		g.Expect(k8sClient.Update(ctx, platformCM)).To(Succeed())
 	}
 
+	// The platform release entry appears on a later reconcile than the
+	// Feast entry (the module must first observe the platformVersion
+	// change), so these matchers must evaluate to false while an entry is
+	// absent: a jq select() over a missing entry produces an empty result
+	// stream, which the jq matcher treats as a terminal StopTrying instead
+	// of a retryable mismatch.
 	g.Eventually(k.Get(ft.module)).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(And(
 		jq.Match(`.status.releases | length > 0`),
-		jq.Match(`.status.releases[] | select(.name == "Feast") | .version != ""`),
-		jq.Matchf(`.status.releases[] | select(.name == "platform") | .version == "%s"`,
+		jq.Match(`any(.status.releases[]?; .name == "Feast" and .version != "")`),
+		jq.Matchf(`any(.status.releases[]?; .name == "platform" and .version == "%s")`,
 			expectedVersion),
 	))
 }
@@ -331,6 +353,13 @@ func (ft *foundationTests) testSpecProjectedToOperand(t *testing.T) {
 	}
 
 	t.Cleanup(func() {
+		// A failed Kind run must not erase the failed projection before
+		// diagnostics have been collected. Standalone behavior is
+		// unchanged.
+		if kindChecksEnabled() && t.Failed() {
+			t.Logf("preserving failed OIDC projection state for diagnostics")
+			return
+		}
 		latest := ft.module.DeepCopy()
 		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(latest), latest); err != nil {
 			return
@@ -359,6 +388,39 @@ func (ft *foundationTests) testSpecProjectedToOperand(t *testing.T) {
 	g.Consistently(k.Get(ft.module)).WithContext(ctx).WithTimeout(10 * time.Second).WithPolling(interval).Should(
 		jq.Matchf(`.spec.oidc.issuerURL == "%s"`, testOIDCIssuerURL),
 	)
+
+	// Kind mode additionally observes an issuer update and an explicit
+	// removal reaching the operand env, each after the module observed the
+	// new generation.
+	if kindChecksEnabled() {
+		beforeUpdate := ft.module.DeepCopy()
+		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(beforeUpdate), beforeUpdate)).To(Succeed())
+		updated := beforeUpdate.DeepCopy()
+		updated.Spec.OIDC = &componentsv1alpha1.GatewayOIDCSpec{IssuerURL: testOIDCIssuerURLUpdate}
+		g.Expect(k8sClient.Patch(ctx, updated, client.MergeFrom(beforeUpdate))).To(Succeed())
+		ft.waitOIDCProjected(t, testOIDCIssuerURLUpdate)
+
+		beforeRemoval := ft.module.DeepCopy()
+		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(beforeRemoval), beforeRemoval)).To(Succeed())
+		removed := beforeRemoval.DeepCopy()
+		removed.Spec.OIDC = nil
+		g.Expect(k8sClient.Patch(ctx, removed, client.MergeFrom(beforeRemoval))).To(Succeed())
+
+		g.Eventually(k.Get(ft.module)).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(And(
+			jq.Match(`.spec.oidc == null`),
+			jq.Match(`.status.observedGeneration == .metadata.generation`),
+			jq.Match(`.status.conditions[] | select(.type == "Ready") | .status == "True"`),
+		))
+
+		// The removal is explicitly observed on the operand env, not only
+		// scheduled by cleanup. Kustomize drops the env var's value field
+		// entirely when the replacement source is empty, so a missing
+		// value counts as removed too.
+		g.Eventually(k.Get(ft.workloadDeploy)).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(
+			jq.Matchf(`any(.spec.template.spec.containers[]?; .name == "manager" and any(.env[]?; .name == "%s" and ((.value // "") != ""))) | not`,
+				oidcIssuerEnvName),
+		)
+	}
 }
 
 func (ft *foundationTests) testReadyFalseOnOperandFailure(t *testing.T) {

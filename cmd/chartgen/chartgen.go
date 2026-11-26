@@ -94,7 +94,12 @@ func run(
 	// Extract defaults from the Deployment resource
 	values := ExtractDefaults(resources)
 	if image != "" {
-		values.Image = imageSpecFor(image)
+		// The override replaces the image coordinates wholesale; the pull
+		// policy is orthogonal to the reference, so the extracted/default
+		// value must survive the replacement.
+		spec := imageSpecFor(image)
+		spec.PullPolicy = values.Image.PullPolicy
+		values.Image = spec
 	}
 
 	// Create output directories

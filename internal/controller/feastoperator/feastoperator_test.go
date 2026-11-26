@@ -20,7 +20,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -89,6 +88,7 @@ func TestImageParamMapIncludesKubeRBACProxy(t *testing.T) {
 
 func TestNewModuleProjectsKubeRBACProxyImage(t *testing.T) {
 	const image = "registry.example.com/odh-kube-rbac-proxy@sha256:1234"
+	const originalEnv = "RELATED_IMAGE_ODH_KUBE_RBAC_PROXY_IMAGE=default\n"
 	t.Setenv("RELATED_IMAGE_ODH_KUBE_RBAC_PROXY_IMAGE", image)
 	for _, tc := range []struct {
 		name     string
@@ -99,27 +99,37 @@ func TestNewModuleProjectsKubeRBACProxyImage(t *testing.T) {
 		{name: "RHOAI", platform: moduleconfig.PlatformTypeSelfManagedRhoai, overlay: overlayRhoai},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+
 			manifests := t.TempDir()
-			path := filepath.Join(manifests, componentName, tc.overlay, "params.env")
+			path := filepath.Join(manifests, componentName, tc.overlay, paramsEnvFile)
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(path, []byte("RELATED_IMAGE_ODH_KUBE_RBAC_PROXY_IMAGE=default\n"), 0o644); err != nil {
+			if err := os.WriteFile(path, []byte(originalEnv), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := NewModule(&moduleconfig.Config{
+
+			m, err := NewModule(&moduleconfig.Config{
 				PlatformType:  tc.platform,
 				ManifestsPath: manifests,
-			}); err != nil {
+			})
+			if err != nil {
 				t.Fatal(err)
 			}
+
+			// The projection is visible through the module's copy-on-write
+			// filesystem (the same instance rendering reads from) ...
+			rendered, err := m.kustomizeFS.ReadFile(manifestParamsEnvPath(m.manifestInfo))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(string(rendered)).To(ContainSubstring("RELATED_IMAGE_ODH_KUBE_RBAC_PROXY_IMAGE=" + image))
+
+			// ... while the image-baked file on disk stays byte-identical.
 			data, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(string(data), "RELATED_IMAGE_ODH_KUBE_RBAC_PROXY_IMAGE="+image) {
-				t.Fatalf("proxy image was not projected into %s: %s", path, data)
-			}
+			g.Expect(string(data)).To(Equal(originalEnv))
 		})
 	}
 }
@@ -136,9 +146,12 @@ func TestNewModule(t *testing.T) {
 	m, err := NewModule(cfg)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(m.cfg).To(Equal(cfg))
-	g.Expect(m.manifestInfo.Path).To(Equal(cfg.ManifestsPath))
+	// The manifest descriptor is relative to the module filesystem root,
+	// which is itself rooted at the physical manifests directory.
+	g.Expect(m.manifestInfo.Path).To(BeEmpty())
 	g.Expect(m.manifestInfo.ContextDir).To(Equal(componentName))
 	g.Expect(m.manifestInfo.SourcePath).To(Equal(overlayODH))
+	g.Expect(m.kustomizeFS).NotTo(BeNil())
 }
 
 func TestInitialize(t *testing.T) {
@@ -150,7 +163,7 @@ func TestInitialize(t *testing.T) {
 
 	g.Expect(m.initialize(context.Background(), rr)).To(Succeed())
 	g.Expect(rr.Manifests).To(HaveLen(1))
-	g.Expect(rr.Manifests[0].Path).To(Equal("/manifests"))
+	g.Expect(rr.Manifests[0].Path).To(BeEmpty())
 	g.Expect(rr.Manifests[0].ContextDir).To(Equal(componentName))
 	g.Expect(rr.Manifests[0].SourcePath).To(Equal(overlayODH))
 }

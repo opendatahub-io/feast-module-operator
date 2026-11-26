@@ -55,20 +55,6 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
-      initContainers:
-      - name: copy-manifests
-        image: controller:latest
-        imagePullPolicy: Always
-        command: ["cp", "-r", "/manifests/.", "/opt/manifests/"]
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop:
-            - "ALL"
-        volumeMounts:
-        - name: manifests
-          mountPath: /opt/manifests
       containers:
       - command:
         - /manager
@@ -111,13 +97,11 @@ spec:
         - name: config
           mountPath: /etc/controller/config
           readOnly: true
-        - name: manifests
-          mountPath: /opt/manifests
         env:
         - name: ODH_MODULE_OPERATOR_CONFIGURATION_PATH
           value: /etc/controller/config
         - name: ODH_MODULE_OPERATOR_MANIFESTS_PATH
-          value: /opt/manifests
+          value: /manifests
         - name: ODH_MODULE_OPERATOR_NAMESPACE
           valueFrom:
             fieldRef:
@@ -133,8 +117,6 @@ spec:
             fieldRef:
               fieldPath: metadata.namespace
       volumes:
-      - name: manifests
-        emptyDir: {}
       - name: config
         configMap:
           name: odh-data-config

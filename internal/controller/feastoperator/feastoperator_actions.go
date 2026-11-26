@@ -67,7 +67,7 @@ func (m *Module) setKustomizedParams(_ context.Context, rr *fwtypes.Reconciliati
 		ParamsEnvKeyOIDCIssuerURL: issuerURL,
 	}
 
-	if err := params.ApplyAtPath(rr.Manifests[0].String(), "params.env", params.Values(extraParams)); err != nil {
+	if err := params.Apply(m.kustomizeFS, manifestParamsEnvPath(rr.Manifests[0]), params.Values(extraParams)); err != nil {
 		return fmt.Errorf("failed to update params.env with kustomize parameters: %w", err)
 	}
 

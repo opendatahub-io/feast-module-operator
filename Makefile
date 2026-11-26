@@ -84,14 +84,44 @@ test-integration: test-integration-setup test-integration-run ## Run integration
 
 .PHONY: test-e2e-run
 test-e2e-run: ## Run e2e tests only (operator must already be deployed).
-	OPERATOR_NAMESPACE="$(OPERATOR_NAMESPACE)" go test -count=1 -ldflags "$(LDFLAGS)" ./test/e2e/ -tags=e2e -v -timeout 5m -failfast
+	OPERATOR_NAMESPACE="$(OPERATOR_NAMESPACE)" \
+	E2E_KIND_CHECKS="$(E2E_KIND_CHECKS)" \
+	E2E_KIND_CLUSTER="$(E2E_KIND_CLUSTER)" \
+	E2E_EXPECTED_FEAST_IMAGE="$(E2E_EXPECTED_FEAST_IMAGE)" \
+	$(KUBECONFIG_ENV) \
+	go test -count=1 -ldflags "$(LDFLAGS)" ./test/e2e/ -tags=e2e -v -timeout 10m -failfast
 
 .PHONY: test-e2e-setup
 test-e2e-setup: ## Prepare the cluster for e2e tests.
 	@:
 
+# Kind-only e2e mode, opt-in inputs for test-e2e-run. The aggregate
+# test-e2e workflow always enables Kind mode and supplies all inputs;
+# standalone runs keep E2E_KIND_CHECKS=false and the existing core suite.
+E2E_KIND_CHECKS ?= false
+E2E_KIND_CLUSTER ?=
+E2E_EXPECTED_FEAST_IMAGE ?=
+
+# KUBECONFIG is passed through to the Go test process only when set, so a
+# standalone run keeps the default client configuration chain.
+ifeq ($(strip $(KUBECONFIG)),)
+KUBECONFIG_ENV :=
+else
+KUBECONFIG_ENV := KUBECONFIG="$(KUBECONFIG)"
+endif
+
 .PHONY: test-e2e
-test-e2e: test-e2e-cleanup test-e2e-setup deploy-helm test-e2e-run ## Run e2e tests (clean, prepare, deploy, then run). ODH_PLATFORM_TYPE=odh|rhoai|managed-rhoai
+test-e2e: ## Run e2e tests on a dedicated Kind cluster with a locally built image. ODH_PLATFORM_TYPE=odh|rhoai (required).
+	@test -n "$(ODH_PLATFORM_TYPE)" || { echo "ERROR: ODH_PLATFORM_TYPE=odh or rhoai is required for the Kind e2e workflow" >&2; exit 1; }
+	./hack/scripts/test-e2e-kind.sh "$(ODH_PLATFORM_TYPE)" "$(ODH_PLATFORM_TYPE_VALUE)"
+
+.PHONY: test-e2e-kind-setup
+test-e2e-kind-setup: ## Create (or safely reuse) and configure the dedicated Kind e2e cluster (no tests).
+	./hack/scripts/test-e2e-kind.sh --setup-only
+
+.PHONY: test-e2e-kind-delete
+test-e2e-kind-delete: ## Delete the dedicated Kind e2e cluster (names only that cluster).
+	./hack/scripts/test-e2e-kind.sh --delete-cluster
 .PHONY: test-integration-cleanup
 test-integration-cleanup: ## Clean up integration test resources from the cluster.
 	./hack/scripts/cleanup-integration.sh "$(INTEGRATION_TEST_NAMESPACE)"
@@ -172,9 +202,13 @@ container-prep: manifests generate ## On host: regenerate code and fetch manifes
 run: manifests generate fmt vet ## Run a controller from your host.
 	ODH_MODULE_OPERATOR_MANIFESTS_PATH=config/manifests go run -ldflags "$(LDFLAGS)" ./cmd/main.go operator
 
+# Optional platform constraint for container-build (e.g. linux/arm64 to
+# match the Kind node architecture when the host differs).
+CONTAINER_BUILD_PLATFORM ?=
+
 .PHONY: docker-build
 docker-build: container-prep ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -f Containerfile --build-arg LDFLAGS="$(LDFLAGS)" -t ${IMG} .
+	$(CONTAINER_TOOL) build $(if $(CONTAINER_BUILD_PLATFORM),--platform $(CONTAINER_BUILD_PLATFORM),) -f Containerfile --build-arg LDFLAGS="$(LDFLAGS)" -t ${IMG} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.

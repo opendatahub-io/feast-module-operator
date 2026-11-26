@@ -3,6 +3,7 @@ extraEnvs: {}
 fullnameOverride: ""
 image:
   fullRef: ""
+  pullPolicy: Always
   repository: quay.io/opendatahub/odh-feast-module-operator
   tag: odh-stable
 imagePullSecret: ""

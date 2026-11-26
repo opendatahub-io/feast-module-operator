@@ -35,6 +35,7 @@ import (
 	moduleconfig "github.com/opendatahub-io/feast-module-operator/pkg/config"
 	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 	gvk "github.com/opendatahub-io/odh-platform-utilities/framework/cluster/gvk"
+	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/deploy"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/gc"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/render/kustomize"
@@ -131,11 +132,7 @@ func NewReconciler(
 		WithAction(m.reconcileCapabilitiesConfigMap).
 		WithAction(releases.NewAction()).
 		WithAction(m.reconcilePlatformVersion).
-		WithAction(kustomize.NewAction(
-			kustomize.WithLabel(componentLabelKey, componentLabelValue),
-			kustomize.WithLabel(partOfLabelKey, componentName),
-			kustomize.WithNamespaceFn(applicationsNamespaceGetter(cfg)),
-		)).
+		WithAction(m.newRenderAction(cfg)).
 		WithAction(m.migrateDeploymentSelector).
 		WithAction(deploy.NewAction(
 			deploy.WithCache(),
@@ -162,6 +159,20 @@ func NewReconciler(
 	}
 
 	return nil
+}
+
+// newRenderAction builds the production kustomize render action. It injects
+// the Module's copy-on-write manifest filesystem — the same instance the
+// startup image replacement and setKustomizedParams write into — so
+// rendering observes the applied params.env values while the physical
+// manifests directory is never written.
+func (m *Module) newRenderAction(cfg *moduleconfig.Config) actions.Fn {
+	return kustomize.NewAction(
+		kustomize.WithEngineFS(m.kustomizeFS),
+		kustomize.WithLabel(componentLabelKey, componentLabelValue),
+		kustomize.WithLabel(partOfLabelKey, componentName),
+		kustomize.WithNamespaceFn(applicationsNamespaceGetter(cfg)),
+	)
 }
 
 // capabilitiesConfigMapWatchPredicate preserves the standard owned-resource

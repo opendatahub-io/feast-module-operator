@@ -33,6 +33,7 @@ import (
 const (
 	defaultImageRepository = "controller"
 	defaultImageTag        = "latest"
+	defaultImagePullPolicy = "Always"
 	defaultLimitsCPU       = "500m"
 	defaultLimitsMemory    = "128Mi"
 	defaultRequestsCPU     = "10m"
@@ -101,6 +102,12 @@ type ImageSpec struct {
 	Repository string `json:"repository"`
 	Tag        string `json:"tag"`
 	FullRef    string `json:"fullRef"`
+
+	// PullPolicy is the manager container's image pull policy. The default
+	// preserves the published-image behavior; local-image workflows (for
+	// example a Kind cluster loaded with a freshly built image) override it
+	// to Never so the node is not asked to pull an unpushed reference.
+	PullPolicy string `json:"pullPolicy" jsonschema:"enum=Always,enum=IfNotPresent,enum=Never"`
 }
 
 // ResourceSpec mirrors corev1.ResourceRequirements but with simpler
@@ -131,6 +138,7 @@ func DefaultValues() Values {
 		Image: ImageSpec{
 			Repository: defaultImageRepository,
 			Tag:        defaultImageTag,
+			PullPolicy: defaultImagePullPolicy,
 		},
 		Replicas: 1,
 		Resources: ResourceSpec{
@@ -173,6 +181,10 @@ func ExtractDefaults(resources []unstructured.Unstructured) Values {
 					parts := splitImageTag(img)
 					values.Image.Repository = parts[0]
 					values.Image.Tag = parts[1]
+				}
+
+				if policy, exists := c["imagePullPolicy"].(string); exists && policy != "" {
+					values.Image.PullPolicy = policy
 				}
 
 				if res, exists := c["resources"].(map[string]any); exists {

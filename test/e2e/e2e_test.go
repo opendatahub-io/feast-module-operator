@@ -34,6 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -81,6 +82,9 @@ var (
 	k8sClient client.Client
 	k         *k8sm.Operations
 
+	// kubeClientSet serves pod log collection for failure diagnostics.
+	kubeClientSet *kubernetes.Clientset
+
 	testScheme = runtime.NewScheme()
 )
 
@@ -110,6 +114,12 @@ func runTestMain(m *testing.M) int {
 		return 1
 	}
 
+	kubeClientSet, err = kubernetes.NewForConfig(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create clientset: %v\n", err)
+		return 1
+	}
+
 	k = k8sm.Using(k8sClient)
 
 	return m.Run()
@@ -119,9 +129,23 @@ type feastE2ETest struct {
 	module            *componentsv1alpha1.FeastOperator
 	operatorNamespace string
 	createdByTest     bool
+	// rootT is the root test of the suite; fixture restores registered by
+	// subtests use it so their failure awareness covers the whole suite.
+	rootT *testing.T
 }
 
 func TestFeastOperator(t *testing.T) {
+	// Kind mode fails preflight on missing inputs instead of skipping;
+	// standalone mode keeps the existing core suite.
+	kindMode := kindChecksEnabled()
+	if kindMode {
+		requireKindInputs(t)
+		// The connected cluster must be the named dedicated Kind cluster
+		// before any fixture operation runs: an ambient kubeconfig must
+		// never receive Kind-mode singleton/ConfigMap lifecycle traffic.
+		verifyKindClusterIdentity(t)
+	}
+
 	suite := &feastE2ETest{
 		module: &componentsv1alpha1.FeastOperator{
 			ObjectMeta: metav1.ObjectMeta{
@@ -129,29 +153,88 @@ func TestFeastOperator(t *testing.T) {
 			},
 		},
 		operatorNamespace: support.OperatorNamespace(),
+		rootT:             t,
 	}
 	foundation := newFoundationTests(suite)
 
 	err := k8sClient.Get(ctx, client.ObjectKeyFromObject(suite.module), suite.module)
 	switch {
+	case err == nil && kindMode:
+		// The cluster-scoped singleton is only adopted on the verified
+		// dedicated cluster with a matching ownership annotation.
+		owner := suite.module.GetAnnotations()[fixtureOwnerAnnotation]
+		if owner != kindClusterName() {
+			t.Fatalf("FeastOperator %s exists with %s=%q (expected %q); refusing to adopt, mutate, or delete it",
+				suite.module.Name, fixtureOwnerAnnotation, owner, kindClusterName())
+		}
+		if suite.module.GetDeletionTimestamp() != nil {
+			// Suite-owned but terminating: wait boundedly for finalization
+			// (never removing finalizers), then create a fresh marked
+			// singleton below.
+			t.Logf("suite-owned FeastOperator %s is terminating; waiting for finalization", suite.module.Name)
+			waitForDeletedWithTimeout(t, suite.module, terminatingTimeout)
+			// Build a fresh object: the terminating one carries
+			// server-managed fields (UID, resourceVersion,
+			// deletionTimestamp, finalizers) that must not be sent on
+			// create.
+			suite.module = &componentsv1alpha1.FeastOperator{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        componentsv1alpha1.FeastOperatorInstanceName,
+					Annotations: map[string]string{fixtureOwnerAnnotation: kindClusterName()},
+				},
+			}
+			suite.createdByTest = true
+		} else {
+			// Recover the known test state of a previous run; it remains
+			// suite-owned and must execute teardown coverage.
+			t.Logf("recovering suite-owned FeastOperator %s from a previous run (operator namespace %s)",
+				suite.module.Name, suite.operatorNamespace)
+			suite.createdByTest = true
+		}
 	case err == nil:
 		t.Logf("using existing FeastOperator %s (operator namespace %s)", suite.module.Name, suite.operatorNamespace)
 	case k8serr.IsNotFound(err):
 		suite.createdByTest = true
-		t.Cleanup(func() {
-			_ = k8sClient.Delete(ctx, suite.module)
-		})
 	default:
 		t.Fatalf("failed to get FeastOperator %s: %v", suite.module.Name, err)
+	}
+
+	if suite.createdByTest {
+		if kindMode {
+			// Mark the singleton as owned by this dedicated cluster's
+			// suite before creating it.
+			annotations := suite.module.GetAnnotations()
+			if annotations == nil {
+				annotations = map[string]string{}
+			}
+			annotations[fixtureOwnerAnnotation] = kindClusterName()
+			suite.module.SetAnnotations(annotations)
+		}
+		t.Cleanup(func() {
+			// A failed Kind run preserves the suite-owned singleton (and
+			// its operands) for inspection; recovery happens on the next
+			// authorized run. Standalone behavior is unchanged.
+			if kindMode && t.Failed() {
+				t.Logf("preserving suite-owned FeastOperator %s after failed run", suite.module.Name)
+				return
+			}
+			_ = k8sClient.Delete(ctx, suite.module)
+		})
 	}
 
 	// Gate: if the operator is not running, fail immediately — don't
 	// let subsequent tests hang waiting for resources that won't appear.
 	eventuallyDeploymentReady(t, foundation.operatorDeploy)
 
+	// Collect diagnostics before failure-aware cleanup decides what to
+	// preserve. Registered after the singleton cleanup, so it runs first.
+	if kindMode {
+		foundation.registerKindDiagnostics(t)
+	}
+
 	// Create the module CR up front (when not already present) so that
 	// subtests observing the deployed workload don't race its creation.
-	if suite.createdByTest {
+	if suite.createdByTest && suite.module.GetResourceVersion() == "" {
 		suite.module.ResourceVersion = ""
 		g := NewWithT(t)
 		g.Expect(k8sClient.Create(ctx, suite.module)).To(Succeed())
@@ -161,6 +244,12 @@ func TestFeastOperator(t *testing.T) {
 }
 
 func waitForDeleted(t *testing.T, obj client.Object) {
+	t.Helper()
+
+	waitForDeletedWithTimeout(t, obj, timeout)
+}
+
+func waitForDeletedWithTimeout(t *testing.T, obj client.Object, waitTimeout time.Duration) {
 	t.Helper()
 
 	key := client.ObjectKeyFromObject(obj)
@@ -173,7 +262,7 @@ func waitForDeleted(t *testing.T, obj client.Object) {
 			obj, key, fresh.GetFinalizers())
 		g.Expect(k8serr.IsNotFound(err)).To(BeTrue(),
 			"expected %T %s to be NotFound, got: %v", obj, key, err)
-	}).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(Succeed())
+	}).WithContext(ctx).WithTimeout(waitTimeout).WithPolling(interval).Should(Succeed())
 }
 
 func waitForSingletonDeleted(t *testing.T, obj client.Object) {
