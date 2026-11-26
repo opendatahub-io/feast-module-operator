@@ -3,6 +3,9 @@
 package e2e
 
 import (
+	"fmt"
+	"io"
+	"os"
 	"testing"
 	"time"
 
@@ -37,6 +40,7 @@ type foundationTests struct {
 	operatorCfgMap  *corev1.ConfigMap
 	workloadDeploy  *appsv1.Deployment
 	workloadService *corev1.Service
+	failedLeaves    []string
 }
 
 func newFoundationTests(suite *feastE2ETest) *foundationTests {
@@ -73,19 +77,30 @@ func newFoundationTests(suite *feastE2ETest) *foundationTests {
 }
 
 func (ft *foundationTests) Execute(t *testing.T) {
-	t.Run("should have module CRD installed", ft.testModuleCRDInstalled)
-	t.Run("should have operator ConfigMap deployed", ft.testOperatorConfigMap)
-	t.Run("should deploy the manifests matching the platform type", ft.testPlatformManifests)
-	t.Run("should reject a non-singleton FeastOperator", ft.testSingletonEnforced)
-	t.Run("should become ready", ft.testBecomesReady)
-	t.Run("should have operator and operand Deployments available", ft.testDeploymentsAvailable)
-	t.Run("should report release version and platform", ft.testReleaseStatus)
-	t.Run("should set platform labels and annotations", ft.testPlatformLabels)
-	t.Run("should set owner references", ft.testOwnerReferences)
-	t.Run("should expose a reachable operand Service", ft.testOperandServiceReachable)
-	t.Run("should reflect spec changes in operands", ft.testSpecProjectedToOperand)
-	t.Run("should report not ready when a critical operand fails", ft.testReadyFalseOnOperandFailure)
-	t.Run("should remove operands when the module CR is deleted", ft.testCleanupRemovesOperands)
+	tests := []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{"should have module CRD installed", ft.testModuleCRDInstalled},
+		{"should have operator ConfigMap deployed", ft.testOperatorConfigMap},
+		{"should run the operator image built for this PR", ft.testOperatorImage},
+		{"should deploy the manifests matching the platform type", ft.testPlatformManifests},
+		{"should reject a non-singleton FeastOperator", ft.testSingletonEnforced},
+		{"should become ready", ft.testBecomesReady},
+		{"should have operator and operand Deployments available", ft.testDeploymentsAvailable},
+		{"should report release version and platform", ft.testReleaseStatus},
+		{"should set platform labels and annotations", ft.testPlatformLabels},
+		{"should set owner references", ft.testOwnerReferences},
+		{"should expose a reachable operand Service", ft.testOperandServiceReachable},
+		{"should reflect spec changes in operands", ft.testSpecProjectedToOperand},
+		{"should report not ready when a critical operand fails", ft.testReadyFalseOnOperandFailure},
+		{"should remove operands when the module CR is deleted", ft.testCleanupRemovesOperands},
+	}
+	for _, test := range tests {
+		if !t.Run(test.name, test.run) {
+			ft.failedLeaves = append(ft.failedLeaves, t.Name()+"/"+test.name)
+		}
+	}
 }
 
 func (ft *foundationTests) testModuleCRDInstalled(t *testing.T) {
@@ -108,6 +123,18 @@ func (ft *foundationTests) testOperatorConfigMap(t *testing.T) {
 		jq.Match(`.metadata.name == "%s"`, feastoperatorcontroller.PlatformConfigCMName),
 		jq.Match(`(.data."%s" == null) or ((.metadata.ownerReferences // []) | map(select(.kind == "Platform")) | length > 0)`, moduleconfig.KeyPlatformVersion),
 	))
+}
+
+func (ft *foundationTests) testOperatorImage(t *testing.T) {
+	expectedImage := os.Getenv("E2E_EXPECTED_IMAGE")
+	g := NewWithT(t)
+	g.Expect(expectedImage).NotTo(BeEmpty(), "E2E_EXPECTED_IMAGE must name the image built for this PR")
+
+	g.Eventually(func(g Gomega) {
+		deploy := &appsv1.Deployment{}
+		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ft.operatorDeploy), deploy)).To(Succeed())
+		g.Expect(support.VerifyContainerImage(deploy, "manager", expectedImage)).To(Succeed())
+	}).WithContext(ctx).WithTimeout(timeout).WithPolling(interval).Should(Succeed())
 }
 
 // testPlatformManifests validates the platform type chain end to end: the
@@ -168,6 +195,97 @@ func (ft *foundationTests) testBecomesReady(t *testing.T) {
 	))
 
 	eventuallyDeploymentReady(t, ft.workloadDeploy)
+}
+
+func (ft *foundationTests) dumpFailureEvidence(t *testing.T) {
+	t.Helper()
+
+	var out io.Writer = os.Stderr
+	evidencePath := os.Getenv("E2E_FAILURE_EVIDENCE")
+	if evidencePath != "" {
+		evidence, err := os.Create(evidencePath)
+		if err != nil {
+			t.Logf("failed to create E2E failure evidence file %s: %v", evidencePath, err)
+		} else {
+			defer func() {
+				if err := evidence.Close(); err != nil {
+					t.Logf("failed to close E2E failure evidence file %s: %v", evidencePath, err)
+				}
+			}()
+			out = io.MultiWriter(os.Stderr, evidence)
+		}
+	}
+
+	writeEvidence := func(format string, args ...any) {
+		if _, err := fmt.Fprintf(out, format, args...); err != nil {
+			t.Logf("failed to write E2E failure evidence: %v", err)
+		}
+	}
+
+	writeEvidence("=== e2e failure evidence ===\n")
+	writeEvidence("platform=%s\n", os.Getenv("ODH_PLATFORM_TYPE"))
+	for _, leaf := range ft.failedLeaves {
+		writeEvidence("failed leaf: %s\n", leaf)
+	}
+
+	deploy := &appsv1.Deployment{}
+	if err := k8sClient.Get(ctx, client.ObjectKey{
+		Name:      workloadDeployName,
+		Namespace: ft.operatorNamespace,
+	}, deploy); err != nil {
+		writeEvidence("failed to read operand deployment %s: %v\n", workloadDeployName, err)
+	} else {
+		writeEvidence("operand deployment %s\n", deploy.Name)
+		for _, container := range deploy.Spec.Template.Spec.Containers {
+			writeEvidence("operand deployment container %s image=%s args=%q\n", container.Name, container.Image, container.Args)
+		}
+	}
+
+	pods, err := kubeClient.CoreV1().Pods(ft.operatorNamespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "control-plane=controller-manager",
+	})
+	if err != nil {
+		writeEvidence("failed to list operand pods: %v\n", err)
+		return
+	}
+
+	tail := int64(200)
+	const maxLogBytes int64 = 64 << 10
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		writeEvidence("pod %s phase=%s reason=%s\n", pod.Name, pod.Status.Phase, pod.Status.Reason)
+		for _, container := range pod.Spec.Containers {
+			for _, previous := range []bool{false, true} {
+				logType := "current"
+				if previous {
+					logType = "previous"
+				}
+				request := kubeClient.CoreV1().Pods(ft.operatorNamespace).GetLogs(pod.Name, &corev1.PodLogOptions{
+					Container: container.Name,
+					Previous:  previous,
+					TailLines: &tail,
+				})
+				stream, logErr := request.Stream(ctx)
+				if logErr != nil {
+					writeEvidence("--- pod %s/%s %s logs unavailable: %v ---\n", pod.Name, container.Name, logType, logErr)
+					continue
+				}
+				writeEvidence("--- pod %s/%s %s logs (max %d bytes) ---\n", pod.Name, container.Name, logType, maxLogBytes)
+				written, copyErr := io.Copy(out, io.LimitReader(stream, maxLogBytes))
+				closeErr := stream.Close()
+				writeEvidence("\n")
+				if copyErr != nil {
+					writeEvidence("--- pod %s/%s %s logs read failed: %v ---\n", pod.Name, container.Name, logType, copyErr)
+				}
+				if closeErr != nil {
+					writeEvidence("--- pod %s/%s %s logs close failed: %v ---\n", pod.Name, container.Name, logType, closeErr)
+				}
+				if written == maxLogBytes {
+					writeEvidence("--- pod %s/%s %s logs truncated at %d bytes ---\n", pod.Name, container.Name, logType, maxLogBytes)
+				}
+			}
+		}
+	}
 }
 
 func (ft *foundationTests) testDeploymentsAvailable(t *testing.T) {

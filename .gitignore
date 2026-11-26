@@ -30,3 +30,7 @@ local.mk
 
 # direnv
 .envrc
+
+# Python test caches
+__pycache__/
+*.py[cod]

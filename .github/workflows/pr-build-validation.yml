@@ -1,0 +1,530 @@
+name: PR Build Validation
+
+# Simulates the one Konflux pull-request build in this repository:
+#   .tekton/odh-feast-module-operator-pull-request.yaml
+#   Containerfile, path-context ".", output quay.io/opendatahub/odh-feast-module-operator
+#
+# A `go build` does not prove what this repository ships. Three contracts are
+# invisible to the compiler:
+#
+#   1. The image carries the operand manifests at /manifests, a copy-manifests
+#      init container moves them to /opt/manifests, and the operator reads
+#      ODH_MODULE_OPERATOR_MANIFESTS_PATH. Only agreement between the
+#      Containerfile, the chart, and the operator binary keeps that working.
+#   2. config/chart is generated from config/default by `make helm`, and it is
+#      what opendatahub-operator consumes through manifests-config.yaml. CI
+#      regenerates manifests and generated code but never the chart
+#      (RHOAIENG-96436: odh-feast-operator manifests out of sync, an RC blocker).
+#   3. RBAC bindings must name a ServiceAccount the manifests actually create.
+#      A kustomize namePrefix rewrites the ServiceAccount but not the binding
+#      subjects, and the operator crash-loops on startup
+#      (RHOAIENG-100514, RHOAIENG-100515: Data module NotReady; DSC never Ready).
+#
+# Skip with "[skip konflux-sim]" in the PR title or the "skip-konflux-sim" label.
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+  workflow_dispatch:
+
+# Every job grants its own scope; keep the workflow default empty.
+permissions: {}
+
+concurrency:
+  group: pr-build-validation-${{ github.event.pull_request.number || github.run_id }}
+  # Label and title edits must re-evaluate the skip decision, but they must not
+  # cancel an in-flight build. Only new commits supersede a running validation.
+  cancel-in-progress: ${{ github.event.action == 'synchronize' }}
+
+# These names must not collide with Makefile variables. `KUSTOMIZE_VERSION ?=
+# v5.8.1` does not apply when the environment already sets KUSTOMIZE_VERSION,
+# so exporting `5.8.1` makes `make helm` run `go run ...@5.8.1` and fail.
+env:
+  SIM_KUSTOMIZE_VERSION: '5.8.1'
+  SIM_HELM_VERSION: '4.2.0'
+  SIM_KUBECONFORM_VERSION: '0.7.0'
+  SIM_KUBERNETES_VERSION: '1.31.0'
+  SIM_KIND_VERSION: '0.31.0'
+  # SHA-256 of the linux-amd64 release archives for the versions above, taken
+  # from each project's published checksum file. A download that does not match
+  # fails closed before anything is extracted or installed (CWE-494/CWE-829).
+  SIM_HELM_SHA256: '97dbeb971be4ac4b27e3839976d9564c0fb35c6f3b1da89dd1e292d236af4096'
+  SIM_KUSTOMIZE_SHA256: '029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d'
+  SIM_KUBECONFORM_SHA256: 'c31518ddd122663b3f3aa874cfe8178cb0988de944f29c74a0b9260920d115d3'
+  SIM_KIND_SHA256: 'eb244cbafcc157dff60cf68693c14c9a75c4e6e6fedaf9cd71c58117cb93e3fa'
+
+jobs:
+  check-skip:
+    name: Check Skip Condition
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      should-skip: ${{ steps.check.outputs.skip }}
+      reason: ${{ steps.check.outputs.reason }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Evaluate skip condition
+        id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          # test/e2e/ is included on purpose: the suite is now part of the
+          # gate, so a change to it has to re-run the gate. Leaving it out is
+          # how the suite stops being run without anyone noticing.
+          # `.*\.go$` catches Go outside the listed directories (tools/, for
+          # example); the hermetic preflight builds ./... and would see it.
+          RELEVANT='^(api/|cmd/|internal/|pkg/|config/|hack/|test/e2e/|test/support/|Containerfile|Makefile|go\.(mod|sum)|\.dockerignore|\.tekton/|scripts/(validate-build(_test)?\.sh|pr-validation-summary(_test)?\.sh|manifest_contract(_test)?\.py|requirements-validation\.txt)|\.github/workflows/pr-build-validation\.yml|.*\.go$)'
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "reason=manual dispatch" >> "$GITHUB_OUTPUT"
+          elif [[ "$PR_TITLE" == *"[skip konflux-sim]"* ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "reason=PR title contains [skip konflux-sim]" >> "$GITHUB_OUTPUT"
+          elif [[ ",${PR_LABELS}," == *",skip-konflux-sim,"* ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "reason=skip-konflux-sim label present" >> "$GITHUB_OUTPUT"
+          else
+            # Capture the file list first: in a pipeline `grep -q` exits on the
+            # first match, `git diff` then dies with SIGPIPE, and `!` turns that
+            # failure into "no relevant changes". `-z` preserves raw paths, so
+            # Git does not quote non-ASCII names and hide their extensions.
+            changed_files="$(mktemp)"
+            if ! git diff --no-renames --name-only -z "origin/${BASE_REF}...HEAD" > "$changed_files"; then
+              rm -f "$changed_files"
+              exit 1
+            fi
+            relevant=false
+            while IFS= read -r -d '' changed_file; do
+              if [[ "$changed_file" =~ $RELEVANT ]]; then
+                relevant=true
+                break
+              fi
+            done < "$changed_files"
+            rm -f "$changed_files"
+            if [ "$relevant" = "true" ]; then
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+              echo "reason=relevant changes detected" >> "$GITHUB_OUTPUT"
+            else
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "reason=no Konflux-relevant files changed" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  static-validation:
+    name: Static Validation Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    needs: check-skip
+    if: needs.check-skip.outputs.should-skip != 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Helm
+        env:
+          SIM_HELM_VERSION: ${{ env.SIM_HELM_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/helm.tar.gz \
+            "https://get.helm.sh/helm-v${SIM_HELM_VERSION}-linux-amd64.tar.gz"
+          printf '%s  %s\n' "$SIM_HELM_SHA256" /tmp/helm.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/helm.tar.gz -C /tmp
+          sudo install -m 0755 "/tmp/linux-amd64/helm" /usr/local/bin/helm
+          helm version --short
+
+      - name: Install PyYAML
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --user \
+            --require-hashes -r scripts/requirements-validation.txt
+
+      - name: Validate build inputs
+        run: |
+          set -euo pipefail
+          ./scripts/validate-build.sh static
+
+      - name: Test the validation helpers
+        run: |
+          set -euo pipefail
+          ./scripts/validate-build_test.sh
+          ./scripts/pr-validation-summary_test.sh
+          python3 scripts/manifest_contract_test.py
+
+  hermetic-preflight:
+    name: Hermetic Build Preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    needs: check-skip
+    if: needs.check-skip.outputs.should-skip != 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install PyYAML
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --user \
+            --require-hashes -r scripts/requirements-validation.txt
+
+      - name: Read the Go version pinned by the builder image
+        id: builder
+        run: |
+          set -euo pipefail
+          version="$(./scripts/validate-build.sh builder-go)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "The Konflux Containerfile builds with go${version}"
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # The builder image's version, not go.mod's `go` directive: the
+          # preflight must prove that this toolchain compiles the module set.
+          go-version: ${{ steps.builder.outputs.version }}
+          cache: false
+
+      - name: Prove the module set builds without network
+        # GOTOOLCHAIN=local plus the equality check means a go.mod that demands
+        # a newer toolchain fails here instead of downloading one mid-build,
+        # which the pinned Konflux builder cannot do either.
+        env:
+          GOTOOLCHAIN: local
+          BUILDER_GO_VERSION: ${{ steps.builder.outputs.version }}
+        run: |
+          set -euo pipefail
+          actual="$(go env GOVERSION)"
+          echo "runner toolchain: ${actual}"
+          if [ "$actual" != "go${BUILDER_GO_VERSION}" ]; then
+            echo "::error::runner toolchain ${actual} does not match the builder image golang:${BUILDER_GO_VERSION}"
+            exit 1
+          fi
+          ./scripts/validate-build.sh hermetic
+
+  manifest-validation:
+    name: Validate Manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    needs: check-skip
+    if: needs.check-skip.outputs.should-skip != 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install kustomize and kubeconform
+        env:
+          SIM_KUSTOMIZE_VERSION: ${{ env.SIM_KUSTOMIZE_VERSION }}
+          SIM_KUBECONFORM_VERSION: ${{ env.SIM_KUBECONFORM_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${SIM_KUSTOMIZE_VERSION}/kustomize_v${SIM_KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "$SIM_KUSTOMIZE_SHA256" /tmp/kustomize.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/kustomize.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/kustomize /usr/local/bin/kustomize
+
+          curl -fsSL -o /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/v${SIM_KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          printf '%s  %s\n' "$SIM_KUBECONFORM_SHA256" /tmp/kubeconform.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
+
+          kustomize version
+          kubeconform -v
+
+      - name: Install PyYAML
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --user \
+            --require-hashes -r scripts/requirements-validation.txt
+
+      - name: Validate kustomize builds, schemas, and RBAC subjects
+        run: |
+          set -euo pipefail
+          ./scripts/validate-build.sh manifests
+
+  chart-validation:
+    name: Validate Helm Chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    needs: check-skip
+    if: needs.check-skip.outputs.should-skip != 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The base ref is regenerated too, so drift that already exists on the
+          # base branch can be told apart from drift this PR introduces.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Install Helm
+        env:
+          SIM_HELM_VERSION: ${{ env.SIM_HELM_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/helm.tar.gz \
+            "https://get.helm.sh/helm-v${SIM_HELM_VERSION}-linux-amd64.tar.gz"
+          printf '%s  %s\n' "$SIM_HELM_SHA256" /tmp/helm.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/helm.tar.gz -C /tmp
+          sudo install -m 0755 "/tmp/linux-amd64/helm" /usr/local/bin/helm
+          helm version --short
+
+      - name: Install kustomize
+        env:
+          SIM_KUSTOMIZE_VERSION: ${{ env.SIM_KUSTOMIZE_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${SIM_KUSTOMIZE_VERSION}/kustomize_v${SIM_KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "$SIM_KUSTOMIZE_SHA256" /tmp/kustomize.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/kustomize.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/kustomize /usr/local/bin/kustomize
+          kustomize version
+
+      - name: Install PyYAML
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --user \
+            --require-hashes -r scripts/requirements-validation.txt
+
+      - name: Render the chart and regenerate it from source
+        env:
+          GOTOOLCHAIN: local
+          # Use the installed binary: `make helm KUSTOMIZE=...` beats the
+          # Makefile's `go run` and keeps the step independent of the module
+          # proxy.
+          KUSTOMIZE_BIN: /usr/local/bin/kustomize
+          # `base_ref` is empty on workflow_dispatch, which would produce the
+          # invalid ref `origin/`; fall back to the default branch there.
+          CHART_DRIFT_BASE_REF: origin/${{ github.base_ref || github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          ./scripts/validate-build.sh chart
+
+  image-validation:
+    name: Build Container Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    needs: check-skip
+    if: needs.check-skip.outputs.should-skip != 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install PyYAML
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --user \
+            --require-hashes -r scripts/requirements-validation.txt
+
+      - name: Build and inspect the image
+        run: |
+          set -euo pipefail
+          ./scripts/validate-build.sh image
+
+  operator-e2e-odh:
+    name: Operator e2e (odh)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    needs: check-skip
+    if: needs.check-skip.outputs.should-skip != 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Install Helm
+        env:
+          SIM_HELM_VERSION: ${{ env.SIM_HELM_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/helm.tar.gz \
+            "https://get.helm.sh/helm-v${SIM_HELM_VERSION}-linux-amd64.tar.gz"
+          printf '%s  %s\n' "$SIM_HELM_SHA256" /tmp/helm.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/helm.tar.gz -C /tmp
+          sudo install -m 0755 "/tmp/linux-amd64/helm" /usr/local/bin/helm
+          helm version --short
+
+      - name: Install kind
+        env:
+          SIM_KIND_VERSION: ${{ env.SIM_KIND_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/kind \
+            "https://github.com/kubernetes-sigs/kind/releases/download/v${SIM_KIND_VERSION}/kind-linux-amd64"
+          printf '%s  %s\n' "$SIM_KIND_SHA256" /tmp/kind | sha256sum --check --strict
+          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
+          kind version
+
+      # `make test-e2e` deploys the image this PR builds through IMG, then runs
+      # the repository's own suite against it. The suite also compares the live
+      # manager container image with E2E_EXPECTED_IMAGE, so a default or stale
+      # image cannot pass merely by becoming Ready.
+      - name: Run the operator e2e against the PR image
+        id: e2e
+        env:
+          GOTOOLCHAIN: local
+          E2E_PLATFORMS: odh
+          HELM_BIN: /usr/local/bin/helm
+        run: |
+          set -euo pipefail
+          ./scripts/validate-build.sh e2e
+
+  # The rhoai overlay passes --metrics-cert-path to the pinned upstream
+  # quay.io/feastdev/feast-operator image, which does not define that flag.
+  # This is a normal blocking check. It turns green once the overlay fix in
+  # opendatahub-io/feast#312 is merged and the vendored manifest pin moves.
+  operator-e2e-rhoai:
+    name: Operator e2e (rhoai)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    needs: check-skip
+    if: needs.check-skip.outputs.should-skip != 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Install Helm
+        env:
+          SIM_HELM_VERSION: ${{ env.SIM_HELM_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/helm.tar.gz \
+            "https://get.helm.sh/helm-v${SIM_HELM_VERSION}-linux-amd64.tar.gz"
+          printf '%s  %s\n' "$SIM_HELM_SHA256" /tmp/helm.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/helm.tar.gz -C /tmp
+          sudo install -m 0755 "/tmp/linux-amd64/helm" /usr/local/bin/helm
+          helm version --short
+
+      - name: Install kind
+        env:
+          SIM_KIND_VERSION: ${{ env.SIM_KIND_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/kind \
+            "https://github.com/kubernetes-sigs/kind/releases/download/v${SIM_KIND_VERSION}/kind-linux-amd64"
+          printf '%s  %s\n' "$SIM_KIND_SHA256" /tmp/kind | sha256sum --check --strict
+          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
+          kind version
+
+      - name: Run the operator e2e against the PR image
+        id: e2e
+        env:
+          GOTOOLCHAIN: local
+          E2E_PLATFORMS: rhoai
+          HELM_BIN: /usr/local/bin/helm
+          E2E_FAILURE_EVIDENCE: ${{ runner.temp }}/rhoai-e2e-evidence.log
+        run: |
+          set -euo pipefail
+          ./scripts/validate-build.sh e2e
+
+  summary:
+    name: Build Validation Summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    needs:
+      - check-skip
+      - static-validation
+      - hermetic-preflight
+      - manifest-validation
+      - chart-validation
+      - image-validation
+      - operator-e2e-odh
+      - operator-e2e-rhoai
+    if: always()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check results
+        env:
+          CHECK_SKIP: ${{ needs.check-skip.result }}
+          SKIP: ${{ needs.check-skip.outputs.should-skip }}
+          REASON: ${{ needs.check-skip.outputs.reason }}
+          STATIC: ${{ needs.static-validation.result }}
+          HERMETIC: ${{ needs.hermetic-preflight.result }}
+          MANIFESTS: ${{ needs.manifest-validation.result }}
+          CHART: ${{ needs.chart-validation.result }}
+          IMAGE: ${{ needs.image-validation.result }}
+          E2E_ODH: ${{ needs.operator-e2e-odh.result }}
+          E2E_RHOAI: ${{ needs.operator-e2e-rhoai.result }}
+        run: |
+          set -euo pipefail
+          ./scripts/pr-validation-summary.sh
