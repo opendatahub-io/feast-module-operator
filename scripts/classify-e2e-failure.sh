@@ -27,7 +27,7 @@ failed_leaf_count="$(grep -Fc 'failed leaf: ' "$evidence" || true)"
 allowed_leaf_count="$(grep -Fxc "failed leaf: ${allowed_failed_leaf}" "$evidence" || true)"
 
 if grep -Fq 'operand deployment feast-operator-controller-manager' "$evidence" &&
-   grep -Eq 'flag provided but not defined: -metrics-cert-path([^[:alnum:]_-]|$)' "$evidence" &&
+   grep -Eq 'flag provided but not defined: -metrics-cert-path([[:space:]]|$)' "$evidence" &&
    [ "$failed_leaf_count" -eq 1 ] &&
    [ "$allowed_leaf_count" -eq 1 ]; then
   echo "expected-upstream-metrics-cert-path"
