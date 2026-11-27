@@ -39,7 +39,7 @@ case "${platform_type}" in
     odh | OpenDataHub)
         echo "Downloading manifests for ODH"
         REPO_URL="https://github.com/opendatahub-io/feast"
-        COMMIT_SHA="ef760a4d5b9e00bb2ea4d3124c556a9c9466a2ac"
+        COMMIT_SHA="99695c8cdfb613c933ce610ebb2e352d2beb2258"
         ;;
     rhoai | managed-rhoai)
         echo "Downloading manifests for RHOAI"
