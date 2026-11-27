@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"sort"
@@ -27,9 +28,10 @@ import (
 )
 
 type permission struct {
-	APIGroup string
-	Resource string
-	Verb     string
+	APIGroup     string
+	Resource     string
+	Verb         string
+	ResourceName string
 }
 
 func (p permission) String() string {
@@ -37,7 +39,7 @@ func (p permission) String() string {
 	if group == "" {
 		group = `""`
 	}
-	return fmt.Sprintf("groups=%s resources=%s verbs=%s", group, p.Resource, p.Verb)
+	return fmt.Sprintf("groups=%s resources=%s verbs=%s resourceName=%q", group, p.Resource, p.Verb, p.ResourceName)
 }
 
 func loadClusterRole(path string) (*rbacv1.ClusterRole, error) {
@@ -78,16 +80,21 @@ func loadClusterRoleByName(path, name string) (*rbacv1.ClusterRole, error) {
 	return nil, fmt.Errorf("ClusterRole %q not found in %s", name, path)
 }
 
-// extractPermissions flattens a ClusterRole into a set of (apiGroup, resource, verb) tuples.
-// Rules with resourceNames are expanded without the name constraint since the module operator
-// grants broader (unscoped) access.
+// extractPermissions preserves resourceNames: binding system:auth-delegator
+// does not authorize granting bind permission for an unrelated named role.
 func extractPermissions(role *rbacv1.ClusterRole) map[permission]struct{} {
 	perms := make(map[permission]struct{})
 	for _, rule := range role.Rules {
+		names := rule.ResourceNames
+		if len(names) == 0 {
+			names = []string{""}
+		}
 		for _, group := range rule.APIGroups {
 			for _, resource := range rule.Resources {
 				for _, verb := range rule.Verbs {
-					perms[permission{APIGroup: group, Resource: resource, Verb: verb}] = struct{}{}
+					for _, name := range names {
+						perms[permission{APIGroup: group, Resource: resource, Verb: verb, ResourceName: name}] = struct{}{}
+					}
 				}
 			}
 		}
@@ -95,14 +102,32 @@ func extractPermissions(role *rbacv1.ClusterRole) map[permission]struct{} {
 	return perms
 }
 
+func permissionCovered(granted map[permission]struct{}, required permission) bool {
+	for _, group := range []string{required.APIGroup, "*"} {
+		for _, resource := range []string{required.Resource, "*"} {
+			for _, verb := range []string{required.Verb, "*"} {
+				for _, name := range []string{required.ResourceName, ""} {
+					if _, ok := granted[permission{APIGroup: group, Resource: resource, Verb: verb, ResourceName: name}]; ok {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 func main() {
-	if len(os.Args) < 3 || len(os.Args) > 5 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <module-operator-role.yaml> <operand-role.yaml> [<chart-clusterrole.yaml> <role-name>]\n", os.Args[0])
+	requireRegistryNamespace := flag.Bool("require-data-registry-namespace", true, "also verify the Feast operand's Data Registry namespace permissions")
+	flag.Parse()
+	args := flag.Args()
+	if len(args) != 2 && len(args) != 4 {
+		fmt.Fprintf(os.Stderr, "Usage: %s [flags] <module-operator-role.yaml> <operand-role.yaml> [<chart-clusterrole.yaml> <role-name>]\n", os.Args[0])
 		os.Exit(2)
 	}
 
-	moduleRolePath := os.Args[1]
-	operandRolePath := os.Args[2]
+	moduleRolePath := args[0]
+	operandRolePath := args[1]
 
 	moduleRole, err := loadClusterRole(moduleRolePath)
 	if err != nil {
@@ -125,18 +150,18 @@ func main() {
 	var missingNamespacePerms []permission
 	for _, verb := range []string{"create", "update"} {
 		p := permission{APIGroup: "", Resource: "namespaces", Verb: verb}
-		if _, ok := operandPerms[p]; !ok {
+		if !permissionCovered(operandPerms, p) {
 			missingNamespacePerms = append(missingNamespacePerms, p)
 		}
 	}
-	if len(missingNamespacePerms) > 0 {
+	if *requireRegistryNamespace && len(missingNamespacePerms) > 0 {
 		printMissing("bundled operand RBAC", "Data Registry namespace reconciliation", missingNamespacePerms)
 		os.Exit(1)
 	}
 
 	var missing []permission
 	for p := range operandPerms {
-		if _, ok := modulePerms[p]; !ok {
+		if !permissionCovered(modulePerms, p) {
 			missing = append(missing, p)
 		}
 	}
@@ -151,9 +176,9 @@ func main() {
 
 	fmt.Println("OK: module operator RBAC covers all operand permissions.")
 
-	if len(os.Args) == 5 {
-		chartPath := os.Args[3]
-		roleName := os.Args[4]
+	if len(args) == 4 {
+		chartPath := args[2]
+		roleName := args[3]
 
 		chartRole, err := loadClusterRoleByName(chartPath, roleName)
 		if err != nil {
@@ -165,7 +190,7 @@ func main() {
 
 		var chartMissing []permission
 		for p := range modulePerms {
-			if _, ok := chartPerms[p]; !ok {
+			if !permissionCovered(chartPerms, p) {
 				chartMissing = append(chartMissing, p)
 			}
 		}
@@ -188,6 +213,9 @@ func printMissing(target, source string, missing []permission) {
 		if missing[i].Resource != missing[j].Resource {
 			return missing[i].Resource < missing[j].Resource
 		}
+		if missing[i].ResourceName != missing[j].ResourceName {
+			return missing[i].ResourceName < missing[j].ResourceName
+		}
 		return missing[i].Verb < missing[j].Verb
 	})
 
@@ -195,7 +223,7 @@ func printMissing(target, source string, missing []permission) {
 
 	grouped := map[string]map[string][]string{}
 	for _, p := range missing {
-		key := p.APIGroup + "/" + p.Resource
+		key := p.APIGroup + "/" + p.Resource + "/" + p.ResourceName
 		if grouped[key] == nil {
 			grouped[key] = map[string][]string{}
 		}
@@ -203,14 +231,14 @@ func printMissing(target, source string, missing []permission) {
 	}
 
 	for _, p := range missing {
-		key := p.APIGroup + "/" + p.Resource
+		key := p.APIGroup + "/" + p.Resource + "/" + p.ResourceName
 		if verbs, ok := grouped[key]; ok {
 			group := p.APIGroup
 			if group == "" {
 				group = `""`
 			}
-			fmt.Fprintf(os.Stderr, "  groups=%-30s resources=%-30s verbs=%s\n",
-				group, p.Resource, strings.Join(verbs["verbs"], ";"))
+			fmt.Fprintf(os.Stderr, "  groups=%-30s resources=%-30s verbs=%s resourceName=%q\n",
+				group, p.Resource, strings.Join(verbs["verbs"], ";"), p.ResourceName)
 			delete(grouped, key)
 		}
 	}

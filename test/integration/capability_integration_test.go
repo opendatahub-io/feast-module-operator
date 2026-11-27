@@ -28,6 +28,7 @@ func (ct *capabilityTests) Execute(t *testing.T) {
 	t.Run("should project capabilities ConfigMap when toggles are enabled", ct.testCapabilitiesConfigMap)
 	t.Run("should recreate capabilities ConfigMap after deletion", ct.testCapabilitiesConfigMapRecreatedAfterDeletion)
 	t.Run("should provision data registry namespace when enabled", ct.testDataRegistryNamespace)
+	t.Run("should retain DCH controller resources until finalization and then collect them", ct.testDataConnectHubRemoval)
 }
 
 func (ct *capabilityTests) testCapabilitiesConfigMap(t *testing.T) {

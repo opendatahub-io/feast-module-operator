@@ -50,11 +50,65 @@ spec:
             properties:
               capabilities:
                 description: |-
-                  Capabilities declares the desired state for Feature Store and Data Registry.
+                  Capabilities declares the desired state for Feature Store, Data Registry,
+                  and Data Connect Hub.
                   When present, these values are authoritative and override process-level
                   environment defaults. When absent, the module falls back to startup
                   configuration (env vars) for backward compatibility.
                 properties:
+                  dataConnectHub:
+                    description: |-
+                      DataConnectHub controls installation of dc-controller and its managed
+                      DataConnectService. Omission means Removed, independently of the other
+                      capabilities and process-level Feature Store / Data Registry defaults.
+                    properties:
+                      gateway:
+                        description: Gateway selects the platform Gateway for the
+                          DCH application.
+                        properties:
+                          name:
+                            description: Name is the Gateway resource name.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          namespace:
+                            description: Namespace contains the Gateway resource.
+                            maxLength: 63
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        - namespace
+                        type: object
+                      managementState:
+                        description: |-
+                          CapabilityManagementState restricts the allowed management states for capability
+                          toggles to Managed or Removed. Unlike the platform's general ManagementState,
+                          Unmanaged and Force are not valid for capability toggles.
+                        enum:
+                        - Managed
+                        - Removed
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace contains DCH services, not the controller. Defaults to
+                          odh-dch-infra on ODH or redhat-dch-infra on RHOAI.
+                        maxLength: 63
+                        pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$
+                        type: string
+                      tokenReviewAudiences:
+                        description: TokenReviewAudiences are projected into the managed
+                          application's spec.
+                        items:
+                          maxLength: 256
+                          minLength: 1
+                          type: string
+                        maxItems: 32
+                        type: array
+                        x-kubernetes-list-type: set
+                    required:
+                    - managementState
+                    type: object
                   dataRegistry:
                     description: |-
                       DataRegistry controls Data Registry workload reconciliation and
