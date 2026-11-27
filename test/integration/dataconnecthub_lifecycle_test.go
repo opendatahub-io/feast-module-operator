@@ -10,6 +10,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	k8serr "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,7 +32,11 @@ const dchLifecycleCapabilityLabel = "data.opendatahub.io/capability"
 // is needed to verify the module's lifecycle contract.
 func (ct *capabilityTests) testDataConnectHubRemoval(t *testing.T) {
 	g := NewWithT(t)
-	const holdFinalizer = "test.opendatahub.io/dch-cleanup-hold"
+	const (
+		holdFinalizer = "test.opendatahub.io/dch-cleanup-hold"
+		gatewayName   = "dch-lifecycle-gateway"
+		audience      = "https://dch-lifecycle.example"
+	)
 	// Keep dc-controller inert so this test controls the simulated application
 	// cleanup. Workload readiness and DCH's own finalizer have separate tests.
 	for _, name := range []string{
@@ -100,13 +105,30 @@ func (ct *capabilityTests) testDataConnectHubRemoval(t *testing.T) {
 		ct.module.Spec.Capabilities.DataConnectHub = &componentsv1alpha1.DataConnectHubCapabilitySpec{
 			CapabilitySpec: componentsv1alpha1.CapabilitySpec{ManagementState: componentsv1alpha1.CapabilityManaged},
 			Namespace:      namespace.Name,
+			Gateway: &componentsv1alpha1.DataConnectHubGatewaySpec{
+				Name: gatewayName, Namespace: support.IntegrationTestNamespace(),
+			},
+			TokenReviewAudiences: []string{audience},
 		}
 		return k8sClient.Update(ctx, ct.module)
 	})).To(Succeed())
 	g.Eventually(func() error {
 		return k8sClient.Get(ctx, client.ObjectKeyFromObject(application), application)
 	}).WithTimeout(timeout).WithPolling(interval).Should(Succeed())
-	var err error
+	owner := metav1.GetControllerOf(application)
+	g.Expect(owner).NotTo(BeNil())
+	g.Expect(owner.UID).To(Equal(moduleUID))
+	g.Expect(owner.Kind).To(Equal(componentsv1alpha1.FeastOperatorKind))
+	g.Expect(owner.APIVersion).To(Equal(componentsv1alpha1.GroupVersion.String()))
+	g.Expect(application.Object).To(HaveKeyWithValue("spec", HaveKeyWithValue("gateway", And(
+		HaveKeyWithValue("name", gatewayName),
+		HaveKeyWithValue("namespace", support.IntegrationTestNamespace()),
+		HaveKeyWithValue("routeNamespace", support.IntegrationTestNamespace()),
+	))))
+	audiences, found, err := unstructured.NestedStringSlice(application.Object, "spec", "tokenReviewAudiences")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(audiences).To(Equal([]string{audience}))
 	heldUID, err = support.AddFinalizerToCurrentResource(ctx, k8sClient, application, holdFinalizer)
 	g.Expect(err).NotTo(HaveOccurred())
 	var installed []client.Object
@@ -169,6 +191,16 @@ func (ct *capabilityTests) testDataConnectHubRemoval(t *testing.T) {
 	g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(databaseConfig), databaseConfig)).To(Succeed())
 	g.Expect(databaseConfig.UID).To(Equal(databaseUID))
 	g.Expect(databaseConfig.Data["secret-config.toml"]).To(Equal([]byte("test-database-configuration")))
+	// Capability removal collects controller resources, but not shared API
+	// definitions needed by another installation or a later re-enable.
+	for _, name := range []string{
+		"dataconnectservices.dataconnecthub.opendatahub.io",
+		"initdataconnections.dataconnecthub.opendatahub.io",
+		"initdataconnectiontypes.dataconnecthub.opendatahub.io",
+	} {
+		crd := &apiextensionsv1.CustomResourceDefinition{}
+		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, crd)).To(Succeed())
+	}
 }
 
 func dchLifecycleResourceLists() []client.ObjectList {
